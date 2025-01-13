@@ -47,8 +47,8 @@ export const SELECT_MENU_VALUE_LIMIT = 100;
  * @type {Map<import('discord.js').GuildPremiumTier, number>}
  */
 export const FILE_UPLOAD_LIMITS = new Map()
-    .set(GuildPremiumTier.None, 8 * 1024 * 1024)
-    .set(GuildPremiumTier.Tier1, 8 * 1024 * 1024)
+    .set(GuildPremiumTier.None, 25 * 1024 * 1024)
+    .set(GuildPremiumTier.Tier1, 25 * 1024 * 1024)
     .set(GuildPremiumTier.Tier2, 50 * 1024 * 1024)
     .set(GuildPremiumTier.Tier3, 100 * 1024 * 1024);
 
@@ -95,3 +95,6 @@ export const BULK_DELETE_MAX_AGE = 14 * 24 * 60 * 60 * 1000;
  * @type {number}
  */
 export const FETCH_BAN_PAGE_SIZE = 1000;
+
+export const MESSAGE_FILE_LIMIT = 10;
+export const MESSAGE_LENGTH_LIMIT = 2000;

@@ -1,7 +1,13 @@
 import SubCommand from '../SubCommand.js';
 import GuildSettings from '../../settings/GuildSettings.js';
-import {ActionRowBuilder, ButtonBuilder, ButtonStyle} from 'discord.js';
-import config from '../../bot/Config.js';
+import {ActionRowBuilder, ButtonStyle} from 'discord.js';
+import {componentEmojiIfExists} from '../../util/format.js';
+import icons from '../../util/icons.js';
+import BetterButtonBuilder from '../../embeds/BetterButtonBuilder.js';
+
+/**
+ * @import {ButtonBuilder} from 'discord.js';
+ */
 
 export default class SettingsOverviewCommand extends SubCommand {
 
@@ -16,7 +22,7 @@ export default class SettingsOverviewCommand extends SubCommand {
     /**
      *
      * @param {import('discord.js').Interaction} interaction
-     * @return {Promise<{components: ActionRowBuilder<ButtonBuilder>[], ephemeral: boolean, embeds: EmbedBuilder[]}>}
+     * @returns {Promise<{components: ActionRowBuilder<ButtonBuilder>[], ephemeral: boolean, embeds: import('discord.js').EmbedBuilder[]}>}
      */
     async buildMessage(interaction) {
         const guildSettings = await GuildSettings.get(interaction.guildId);
@@ -27,15 +33,15 @@ export default class SettingsOverviewCommand extends SubCommand {
                     .setAuthor({name: `${interaction.guild.name}| Settings`, iconURL: interaction.guild.iconURL()})
             ],
             components: [
-                /** @type {ActionRowBuilder<ButtonBuilder>}*/
+                /** @type {ActionRowBuilder<import('discord.js').ButtonBuilder>}*/
                 new ActionRowBuilder()
                     .addComponents(
                         /** @type {*} */
-                        new ButtonBuilder()
+                        new BetterButtonBuilder()
                             .setLabel('Refresh')
                             .setStyle(ButtonStyle.Secondary)
                             .setCustomId('settings:overview')
-                            .setEmoji(config.data.emoji.refresh ?? {})
+                            .setEmojiIfPresent(componentEmojiIfExists('refresh', icons.refresh))
                     )
             ]
         };

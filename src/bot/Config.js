@@ -2,7 +2,7 @@ import logger from './Logger.js';
 import {exists, readJSON} from '../util/fsutils.js';
 
 /**
- * @typedef {Object} ConfigData
+ * @typedef {object} ConfigData
  * @property {string} authToken
  * @property {DatabaseConfig} database
  * @property {?string} googleApiKey
@@ -13,36 +13,41 @@ import {exists, readJSON} from '../util/fsutils.js';
  */
 
 /**
- * @typedef {Object} GoogleCloudConfig
+ * @typedef {object} GoogleCloudConfig
  * @property {GoogleCloudCredentials} credentials
  * @property {CloudLoggingConfig} logging
  * @property {VisionConfig} vision
  */
 
 /**
- * @typedef {Object} DatabaseConfig
+ * @typedef {object} DatabaseConfig
+ * @property {string} host
+ * @property {string} user
+ * @property {string} password
+ * @property {string} database
+ * @property {number} port
  */
 
 /**
- * @typedef {Object} VisionConfig
+ * @typedef {object} VisionConfig
  * @property {boolean} enabled
  */
 
 /**
- * @typedef {Object} CloudLoggingConfig google cloud monitoring
+ * @typedef {object} CloudLoggingConfig google cloud monitoring
  * @property {boolean} enabled
  * @property {string} projectId
  * @property {string} logName
  */
 
 /**
- * @typedef {Object} GoogleCloudCredentials
+ * @typedef {object} GoogleCloudCredentials
  * @property {string} client_email
  * @property {string} private_key
  */
 
 /**
- * @typedef {Object} Emojis
+ * @typedef {object} Emojis
  * @property {?string} source
  * @property {?string} privacy
  * @property {?string} invite
@@ -79,7 +84,7 @@ export class Config {
     #data;
 
     /**
-     * @return {ConfigData}
+     * @returns {ConfigData}
      */
     get data() {
         return this.#data;
@@ -87,22 +92,31 @@ export class Config {
 
     async load() {
         if (process.env.MODBOT_USE_ENV) {
+            let googleCloudCredentials = process.env.MODBOT_GOOGLE_CLOUD_CREDENTIALS;
+            if (googleCloudCredentials) {
+                googleCloudCredentials = JSON.parse((new Buffer(googleCloudCredentials, 'base64')).toString());
+            }
+            else {
+                googleCloudCredentials = {
+                    client_email: process.env.MODBOT_GOOGLE_CLOUD_CREDENTIALS_CLIENT_EMAIL,
+                    private_key: process.env.MODBOT_GOOGLE_CLOUD_CREDENTIALS_PRIVATE_KEY?.replaceAll('\\n', '\n'),
+                };
+            }
+
+
             // load settings from env
             this.#data = {
                 authToken: process.env.MODBOT_AUTH_TOKEN,
                 database: {
                     host: process.env.MODBOT_DATABASE_HOST,
-                    user: process.env.MODBOT_DATABASE_USER,
+                    user: process.env.MODBOT_DATABASE_USER ?? 'modbot',
                     password: process.env.MODBOT_DATABASE_PASSWORD,
-                    database: process.env.MODBOT_DATABASE_DATABASE,
+                    database: process.env.MODBOT_DATABASE_DATABASE ?? 'modbot',
                     port: parseInt(process.env.MODBOT_DATABASE_PORT ?? '3306'),
                 },
                 googleApiKey:  process.env.MODBOT_GOOGLE_API_KEY,
                 googleCloud: {
-                    credentials: {
-                        client_email: process.env.MODBOT_GOOGLE_CLOUD_CREDENTIALS_CLIENT_EMAIL,
-                        private_key: process.env.MODBOT_GOOGLE_CLOUD_CREDENTIALS_PRIVATE_KEY
-                    },
+                    credentials: googleCloudCredentials,
                     vision: {
                         enabled: this.#parseBooleanFromEnv(process.env.MODBOT_GOOGLE_CLOUD_VISION_ENABLED)
                     },
@@ -131,13 +145,13 @@ export class Config {
                     stage: process.env.MODBOT_EMOJI_STAGE,
                     thread: process.env.MODBOT_EMOJI_THREAD,
                     voice: process.env.MODBOT_EMOJI_VOICE,
-                    avatar: process.env.MODBOT_EMOJI_avatar,
-                    ban: process.env.MODBOT_EMOJI_ban,
-                    moderations: process.env.MODBOT_EMOJI_moderations,
-                    mute: process.env.MODBOT_EMOJI_mute,
-                    pardon: process.env.MODBOT_EMOJI_pardon,
-                    strike: process.env.MODBOT_EMOJI_strike,
-                    kick: process.env.MODBOT_EMOJI_kick,
+                    avatar: process.env.MODBOT_EMOJI_AVATAR,
+                    ban: process.env.MODBOT_EMOJI_BAN,
+                    moderations: process.env.MODBOT_EMOJI_MODERATIONS,
+                    mute: process.env.MODBOT_EMOJI_MUTE,
+                    pardon: process.env.MODBOT_EMOJI_PARDON,
+                    strike: process.env.MODBOT_EMOJI_STRIKE,
+                    kick: process.env.MODBOT_EMOJI_KICK,
                     userCreated: process.env.MODBOT_EMOJI_USER_CREATED,
                     userId: process.env.MODBOT_EMOJI_USER_ID,
                     userJoined: process.env.MODBOT_EMOJI_USER_JOINED,
@@ -175,7 +189,7 @@ export class Config {
     /**
      * parse an environment variable as a boolean
      * @param {string} string
-     * @return {boolean}
+     * @returns {boolean}
      */
     #parseBooleanFromEnv(string) {
         return ['1', 'true', 'y'].includes(string?.toLowerCase?.());

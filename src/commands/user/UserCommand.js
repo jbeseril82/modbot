@@ -11,6 +11,7 @@ import ConfirmationEmbed from '../../embeds/ConfirmationEmbed.js';
 import ErrorEmbed from '../../embeds/ErrorEmbed.js';
 import database from '../../bot/Database.js';
 import {replyOrEdit} from '../../util/interaction.js';
+import {AUTOCOMPLETE_NAME_LIMIT} from '../../util/apiLimits.js';
 
 /**
  * warn a user if this member has been moderated in the last x seconds
@@ -25,14 +26,48 @@ const MODERATION_WARN_DURATION = 5 * 60;
 const CONFIRMATION_DURATION = 15 * 60;
 
 /**
+ * @typedef {object} ConfirmationData
+ * @property {?string} reason
+ * @property {?string} comment
+ * @property {import('discord.js').Snowflake} [user]
+ */
+
+/**
+ * @typedef {ConfirmationData} DurationConfirmationData
+ * @property {number} [duration]
+ */
+
+/**
  * @abstract
  */
 export default class UserCommand extends Command {
+    buildOptions(builder) {
+        builder.addUserOption(option =>
+            option
+                .setName('user')
+                .setDescription('The target user')
+                .setRequired(true)
+        );
+        builder.addStringOption(option =>
+            option.setName('reason')
+                .setDescription('Reason for the moderation shown to the user')
+                .setRequired(false)
+                .setAutocomplete(true)
+        );
+        builder.addStringOption(option =>
+            option.setName('comment')
+                .setDescription('Internal comment for moderators')
+                .setRequired(false)
+                .setAutocomplete(true)
+        );
+        return super.buildOptions(builder);
+    }
+
     /**
      * check if this member can be moderated by this moderator
      * @param {import('discord.js').Interaction} interaction
      * @param {?MemberWrapper} member
-     * @return {Promise<boolean>}
+     * @returns {Promise<boolean>}
      */
     async checkPermissions(interaction, member) {
         if (!member) {
@@ -44,7 +79,7 @@ export default class UserCommand extends Command {
             return false;
         }
 
-        const moderator =  await new MemberWrapper(interaction.user, interaction.guild).fetchMember();
+        const moderator = await new MemberWrapper(interaction.user, interaction.guild).fetchMember();
         if (!await member.isModerateableBy(moderator)) {
             await replyOrEdit(interaction, ErrorEmbed.message('You can\'t moderate this member!'));
             return false;
@@ -56,8 +91,8 @@ export default class UserCommand extends Command {
     /**
      * @param {import('discord.js').Interaction} interaction
      * @param {MemberWrapper} member
-     * @param {Object} data data that will be saved for the confirmation
-     * @return {Promise<boolean>} should the punishment be executed now
+     * @param {ConfirmationData} data data that will be saved for the confirmation
+     * @returns {Promise<boolean>} should the punishment be executed now
      */
     async preventDuplicateModeration(interaction, member, data = {}) {
         const customIdParts = (interaction.customId ?? '').split(':');
@@ -83,19 +118,21 @@ export default class UserCommand extends Command {
         const confirmation = new Confirmation(data, Math.floor(Date.now() / 1000) + CONFIRMATION_DURATION);
         const embed = new ConfirmationEmbed(this.getName(), await confirmation.save())
             .setAuthor({
-                name: `${member.user.tag} has already been moderated in the last ${formatTime(MODERATION_WARN_DURATION)}.`,
-                iconURL: member.user.avatarURL()
+                name: `${await member.displayName()} has already been moderated in the last ${formatTime(MODERATION_WARN_DURATION)}.`,
+                iconURL: await member.displayAvatarURL()
             });
 
         for (const result of results.slice(-3)) {
             const moderator = await new UserWrapper(result.moderator).fetchUser();
             embed
-                .addPairIf(moderator, 'Moderator', moderator.tag)
+                .addPairIf(moderator, 'Moderator', moderator.displayName)
+                .addPairIf(moderator, 'Moderator ID', moderator.id)
                 .addPair('Type', toTitleCase(result.action))
                 .addPair('Timestamp', time(result.created, TimestampStyles.ShortTime))
                 .addPairIf(result.expireTime, 'Duration', formatTime(result.getDuration()))
                 .addPairIf(result.value, 'Strikes', result.value)
-                .addPair('Reason', result.reason.slice(0, 200))
+                .addPairIf(result.reason, 'Reason', result.reason?.slice(0, 200))
+                .addPairIf(result.comment, 'Comment', result.comment?.slice(0, 200))
                 .newLine();
         }
 
@@ -108,15 +145,9 @@ export default class UserCommand extends Command {
     async complete(interaction) {
         const focussed = interaction.options.getFocused(true);
         switch (focussed.name) {
-            case 'reason': {
-                const options = await database.queryAll(
-                    'SELECT reason, COUNT(*) AS count FROM (SELECT reason FROM moderations WHERE moderator = ? AND guildid = ? AND action = ? LIMIT 500) AS reasons WHERE reason LIKE CONCAT(\'%\', ?, \'%\') GROUP BY reason ORDER BY count DESC LIMIT 5;',
-                    interaction.user.id, interaction.guild.id, this.getName(), focussed.value);
-                if (focussed.value) {
-                    options.unshift({reason: focussed.value});
-                }
-                return options.map(data => ({name: data.reason, value: data.reason}));
-            }
+            case 'reason':
+            case 'comment':
+                return this.completeFromHistory(interaction, focussed, focussed.name);
 
             case 'duration':{
                 let options = await database.queryAll(
@@ -134,5 +165,30 @@ export default class UserCommand extends Command {
         }
 
         return super.complete(interaction);
+    }
+
+    /**
+     * Complete an option using the history of previous values for this option
+     * @param {import('discord.js').AutocompleteInteraction} interaction
+     * @param {import('discord.js').AutocompleteFocusedOption} focussed
+     * @param {string} column the database column name
+     * @returns {Promise<{name: *, value: *}[]|*[]>}
+     */
+    async completeFromHistory(interaction, focussed, column) {
+        if (focussed.value?.length > AUTOCOMPLETE_NAME_LIMIT) {
+            return [];
+        }
+
+        const options = await database.queryAll(
+            'SELECT value, COUNT(*) AS count FROM (' +
+                    `SELECT ${database.escapeId(column)} AS value FROM moderations ` +
+                    'WHERE moderator = ? AND guildid = ? AND action = ? ORDER BY created DESC LIMIT 500' +
+            ') AS results WHERE value LIKE CONCAT(\'%\', ?, \'%\') AND LENGTH(value) <= ? ' +
+            'GROUP BY value ORDER BY count DESC LIMIT 5;',
+            interaction.user.id, interaction.guild.id, this.getName(), focussed.value, AUTOCOMPLETE_NAME_LIMIT);
+        if (focussed.value) {
+            options.unshift({value: focussed.value});
+        }
+        return options.map(data => ({name: data.value, value: data.value}));
     }
 }

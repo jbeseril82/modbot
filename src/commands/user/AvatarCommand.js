@@ -3,6 +3,9 @@ import {ALLOWED_SIZES, EmbedBuilder, escapeMarkdown} from 'discord.js';
 import MemberWrapper from '../../discord/MemberWrapper.js';
 import GuildWrapper from '../../discord/GuildWrapper.js';
 
+/**
+ * @type {import('discord.js').ImageURLOptions}
+ */
 const IMAGE_OPTIONS = {
     size: ALLOWED_SIZES.at(-1),
 };
@@ -49,22 +52,20 @@ export default class AvatarCommand extends Command {
      * @param {import('discord.js').User} user
      * @param {import('discord.js').Guild|null} guild
      * @param {boolean} useServerProfile
-     * @return {Promise<{ephemeral: boolean, embeds: EmbedBuilder[]}>}
+     * @returns {Promise<{ephemeral: boolean, embeds: EmbedBuilder[]}>}
      */
     async buildMessage(user, guild, useServerProfile = true) {
         let url = user.displayAvatarURL(IMAGE_OPTIONS);
 
-        if (guild && useServerProfile) {
-            const member = await (new MemberWrapper(user, new GuildWrapper(guild))).fetchMember();
-            if (member) {
-                url = member.displayAvatarURL(IMAGE_OPTIONS);
-            }
+        const member = new MemberWrapper(user, new GuildWrapper(guild));
+        if (guild && useServerProfile && await member.fetchMember()) {
+            url = member.member.displayAvatarURL(IMAGE_OPTIONS);
         }
 
         return {
             embeds: [
                 new EmbedBuilder()
-                    .setTitle(`Avatar of ${escapeMarkdown(user.tag)}`)
+                    .setTitle(`Avatar of ${escapeMarkdown(user.displayName)}`)
                     .setImage(url),
             ],
             ephemeral: true,

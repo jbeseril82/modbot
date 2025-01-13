@@ -1,46 +1,50 @@
 import Interval from './Interval.js';
 import database from '../bot/Database.js';
 import bot from '../bot/Bot.js';
-import {EmbedBuilder, RESTJSONErrorCodes, userMention} from 'discord.js';
-import logger from '../bot/Logger.js';
 import GuildWrapper from '../discord/GuildWrapper.js';
 import MemberWrapper from '../discord/MemberWrapper.js';
-import colors from '../util/colors.js';
+import {RESTJSONErrorCodes} from 'discord.js';
+import ErrorEmbed from '../embeds/ErrorEmbed.js';
+import logger from '../bot/Logger.js';
 
 export default class UnbanInterval extends Interval {
     getInterval() {
-        return 30*1000;
+        return 30 * 1000;
     }
 
     async run() {
-        const reason = 'Temporary ban completed!';
-        const client = bot.client;
         for (const result of await database.queryAll('SELECT * FROM moderations WHERE action = \'ban\' AND active = TRUE AND expireTime IS NOT NULL AND expireTime <= ?',
-            Math.floor(Date.now()/1000))) {
-            const user = await client.users.fetch(result.userid);
-            /** @property {number} insertId */
-            const unban = await database.queryAll('INSERT INTO moderations (guildid, userid, action, created, reason, active) VALUES (?,?,?,?,?,?)', result.guildid, result.userid, 'unban', Math.floor(Date.now()/1000), reason, false);
-            const guild = await GuildWrapper.fetch(result.guildid);
-            const member = new MemberWrapper(user, guild);
-
-            await database.query('UPDATE moderations SET active = FALSE WHERE action = \'ban\' AND userid = ? AND guildid = ?',result.userid, result.guildid);
-            try {
-                await member.unban(reason, bot.client.user);
-                const embed = new EmbedBuilder()
-                    .setColor(colors.GREEN)
-                    .setAuthor({name: `Case ${unban.insertId} | Unban | ${user.tag}`, iconURL: user.avatarURL()})
-                    .setFooter({text: user.id})
-                    .setTimestamp()
-                    .addFields(
-                        /** @type {any} */ { name: 'User', value: `${userMention(user.id)}`, inline: true},
-                        /** @type {any} */ { name: 'Reason', value: reason.substring(0, 512), inline: true}
-                    );
-                await guild.log({embeds: [embed]});
+            Math.floor(Date.now() / 1000))) {
+            if (!bot.client.guilds.cache.has(result.guildid)) {
+                continue;
             }
-            catch (e) {
-                if (![RESTJSONErrorCodes.UnknownBan].includes(e.code)) {
-                    await logger.error(`Failed to unban user ${result.userid} in ${result.guildid}`, e);
+
+            try {
+                const guild = await GuildWrapper.fetch(result.guildid);
+
+                if (!guild) {
+                    const wrapper = new GuildWrapper({id: result.guildid});
+                    await wrapper.deleteData();
+                    continue;
                 }
+
+                const user = await bot.client.users.fetch(result.userid);
+                const member = new MemberWrapper(user, guild);
+                try {
+                    await member.unban('Temporary ban completed!', null, bot.client.user);
+                } catch (e) {
+                    if (e.code === RESTJSONErrorCodes.MissingPermissions) {
+                        await database.query('UPDATE moderations SET active = FALSE WHERE active = TRUE AND guildid = ? AND userid = ? AND action = \'ban\'',
+                            guild.guild.id, user.id);
+                        await guild.log(new ErrorEmbed('Missing permissions to unban user!')
+                            .setAuthor({name: user.displayName, iconURL: user.displayAvatarURL()})
+                            .setFooter({text: user.id})
+                            .toMessage(false));
+                    }
+                    throw e;
+                }
+            } catch (e) {
+                await logger.error(`Failed to unmute user ${result.userid} in guild ${result.guildid}`, e);
             }
         }
     }

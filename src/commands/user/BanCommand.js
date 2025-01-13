@@ -1,10 +1,7 @@
 import {
-    ActionRowBuilder,
     ModalBuilder,
     PermissionFlagsBits,
     PermissionsBitField,
-    TextInputBuilder,
-    TextInputStyle
 } from 'discord.js';
 import MemberWrapper from '../../discord/MemberWrapper.js';
 import {parseTime} from '../../util/timeutils.js';
@@ -15,22 +12,24 @@ import Confirmation from '../../database/Confirmation.js';
 import UserActionEmbed from '../../embeds/UserActionEmbed.js';
 import config from '../../bot/Config.js';
 import {deferReplyOnce, replyOrEdit} from '../../util/interaction.js';
+import ReasonInput from '../../modals/inputs/ReasonInput.js';
+import CommentInput from '../../modals/inputs/CommentInput.js';
+import DeleteMessageHistoryInput from '../../modals/inputs/DeleteMessageHistoryInput.js';
+import DurationInput from '../../modals/inputs/DurationInput.js';
+
+/**
+ * @import {DurationConfirmationData} from './UserCommand.js';
+ */
+
+/**
+ * @typedef {DurationConfirmationData} BanConfirmationData
+ * @property {?number} deleteMessageTime
+ */
 
 export default class BanCommand extends UserCommand {
 
     buildOptions(builder) {
-        builder.addUserOption(option =>
-            option
-                .setName('user')
-                .setDescription('The user you want to ban')
-                .setRequired(true)
-        );
-        builder.addStringOption(option =>
-            option.setName('reason')
-                .setDescription('Ban reason')
-                .setRequired(false)
-                .setAutocomplete(true)
-        );
+        super.buildOptions(builder);
         builder.addStringOption(option =>
             option.setName('duration')
                 .setDescription('Ban duration')
@@ -42,7 +41,7 @@ export default class BanCommand extends UserCommand {
                 .setDescription('Delete message history for this time frame')
                 .setRequired(false)
         );
-        return super.buildOptions(builder);
+        return builder;
     }
 
     getDefaultMemberPermissions() {
@@ -63,6 +62,7 @@ export default class BanCommand extends UserCommand {
         await this.ban(interaction,
             new MemberWrapper(interaction.options.getUser('user', true), interaction.guild),
             interaction.options.getString('reason'),
+            interaction.options.getString('comment'),
             parseTime(interaction.options.getString('duration')),
             parseTime(interaction.options.getString('delete'))
         );
@@ -73,20 +73,26 @@ export default class BanCommand extends UserCommand {
      * @param {import('discord.js').Interaction} interaction
      * @param {?MemberWrapper} member
      * @param {?string} reason
+     * @param {?string} comment
      * @param {?number} duration
      * @param {?number} deleteMessageTime
-     * @return {Promise<void>}
+     * @returns {Promise<void>}
      */
-    async ban(interaction, member, reason, duration, deleteMessageTime) {
+    async ban(interaction, member, reason, comment, duration, deleteMessageTime) {
         reason = reason || 'No reason provided';
         await deferReplyOnce(interaction);
 
         if (!await this.checkPermissions(interaction, member) ||
-            !await this.preventDuplicateModeration(interaction, member, {reason, duration, deleteMessageTime})) {
+            !await this.preventDuplicateModeration(interaction, member, {
+                reason,
+                comment,
+                duration,
+                deleteMessageTime
+            })) {
             return;
         }
 
-        await member.ban(reason, interaction.user, duration, deleteMessageTime);
+        await member.ban(reason, comment, interaction.user, duration, deleteMessageTime);
         await replyOrEdit(
             interaction,
             new UserActionEmbed(member.user, reason, 'banned', colors.RED, config.data.emoji.ban, duration)
@@ -96,7 +102,7 @@ export default class BanCommand extends UserCommand {
     async executeButton(interaction) {
         const parts = interaction.customId.split(':');
         if (parts[1] === 'confirm') {
-            /** @type {Confirmation<{reason: ?string, duration: ?number, deleteMessageTime: ?number, user: import('discord.js').Snowflake}>}*/
+            /** @type {Confirmation<BanConfirmationData>}*/
             const data = await Confirmation.get(parts[2]);
             if (!data) {
                 await interaction.update({content: 'This confirmation has expired.', embeds: [], components: []});
@@ -107,6 +113,7 @@ export default class BanCommand extends UserCommand {
                 interaction,
                 await MemberWrapper.getMember(interaction, data.data.user),
                 data.data.reason,
+                data.data.comment,
                 data.data.duration,
                 data.data.deleteMessageTime,
             );
@@ -124,7 +131,7 @@ export default class BanCommand extends UserCommand {
      * prompt user for ban reason, duration and more
      * @param {import('discord.js').Interaction} interaction
      * @param {?MemberWrapper} member
-     * @return {Promise<void>}
+     * @returns {Promise<void>}
      */
     async promptForData(interaction, member) {
         if (!member) {
@@ -132,47 +139,33 @@ export default class BanCommand extends UserCommand {
         }
 
         await interaction.showModal(new ModalBuilder()
-            .setTitle(`Ban ${member.user.tag}`.substring(0, MODAL_TITLE_LIMIT))
+            .setTitle(`Ban ${await member.displayName()}`.substring(0, MODAL_TITLE_LIMIT))
             .setCustomId(`ban:${member.user.id}`)
             .addComponents(
-                /** @type {*} */
-                new ActionRowBuilder()
-                    .addComponents(/** @type {*} */ new TextInputBuilder()
-                        .setRequired(false)
-                        .setLabel('Reason')
-                        .setCustomId('reason')
-                        .setStyle(TextInputStyle.Paragraph)
-                        .setPlaceholder('No reason provided')),
-                /** @type {*} */
-                new ActionRowBuilder()
-                    .addComponents(/** @type {*} */ new TextInputBuilder()
-                        .setRequired(false)
-                        .setLabel('Duration')
-                        .setCustomId('duration')
-                        .setStyle(TextInputStyle.Short)),
-                /** @type {*} */
-                new ActionRowBuilder()
-                    .addComponents(/** @type {*} */ new TextInputBuilder()
-                        .setRequired(false)
-                        .setLabel('Delete message history')
-                        .setCustomId('delete')
-                        .setStyle(TextInputStyle.Short)
-                        .setValue('1 hour')),
+                new ReasonInput().toActionRow(),
+                new CommentInput().toActionRow(),
+                new DurationInput().toActionRow(),
+                new DeleteMessageHistoryInput().toActionRow(),
             ));
     }
 
     async executeModal(interaction) {
-        let reason, duration, deleteMessageTime;
+        let reason, duration, deleteMessageTime, comment;
         for (const row of interaction.components) {
             for (const component of row.components) {
-                if (component.customId === 'reason') {
-                    reason = component.value || 'No reason provided';
-                }
-                else if (component.customId === 'duration') {
-                    duration = parseTime(component.value);
-                }
-                else if (component.customId === 'delete') {
-                    deleteMessageTime = parseTime(component.value);
+                switch (component.customId) {
+                    case 'reason':
+                        reason = component.value || 'No reason provided';
+                        break;
+                    case 'comment':
+                        comment = component.value || null;
+                        break;
+                    case 'duration':
+                        duration = parseTime(component.value);
+                        break;
+                    case 'delete':
+                        deleteMessageTime = parseTime(component.value);
+                        break;
                 }
             }
         }
@@ -181,6 +174,7 @@ export default class BanCommand extends UserCommand {
             interaction,
             await MemberWrapper.getMemberFromCustomId(interaction),
             reason,
+            comment,
             duration,
             deleteMessageTime
         );

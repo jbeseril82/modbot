@@ -25,7 +25,7 @@ has punished this user in the last 5 minutes.
 
 ### Add ModBot to your server
 By adding the bot to your server you agree to our [privacy policy](https://aternos.gmbh/en/modbot/privacy). <br>
-Invite: [Click me](https://discordapp.com/oauth2/authorize?client_id=790967448111153153&scope=bot&permissions=268446806)
+Invite: [Click me](https://discord.com/oauth2/authorize?client_id=790967448111153153&scope=bot%20applications.commands&permissions=1099780074646)
 
 You can view all commands by typing a slash `/` in the text input field. 
 All commands and options have clear descriptions.
@@ -45,20 +45,31 @@ We can't help with every problem and won't add features that we don't need.**
 ### Support
 You can view the usage of commands with the help command.<br>
 If you think you found a bug in ModBot then please create an [issue](https://github.com/aternosorg/modbot/issues). <br>
-For security vulnerabilities send a mail to [security@aternos.org](mailto://security@aternos.org).
+For security issues please refer to the [SECURITY.md](./SECURITY.md).
 
 ### Self Hosting
-Requirements: [Node.js](https://nodejs.org/en/download/) (v16.9.0+), a [MySQL](https://dev.mysql.com/downloads/mysql/) database
-1. Download the code and run `npm install`
-2. Create a [Discord application](https://discordapp.com/developers/applications/).
-   You also have to enable the SERVER MEMBERS intent.
+If you want to host the bot yourself you can use our pre-built docker image or install it directly.
+In both cases you will need a [MySQL](https://dev.mysql.com/downloads/mysql/) database and a 
+[Discord application](https://discord.com/developers/applications/):
+
+1. Create a [Discord application](https://discord.com/developers/applications/) and enable the SERVER MEMBERS intent.
    The bot needs this to reassign the muted role when a muted user joins your server
-3. Add a bot to the application and copy the auth token
-4. (optional) Create an API key in the [Google Cloud Console](https://console.cloud.google.com/) for the YouTube Data API v3
-5. Configure the bot (see [CONFIGURATION.md](./CONFIGURATION.md))
-6. Start the index.js file
-7. To invite the bot to your server replace `ID` with the client ID of your application
-https://discordapp.com/oauth2/authorize?client_id=ID&scope=bot%20applications.commands&permissions=1099780074518 and open the link
+2. Add a bot to the application and copy the auth token
+3. Configure the bot (see [CONFIGURATION.md](./CONFIGURATION.md))
+4. To invite the bot to your server replace `ID` with the client ID of your application
+   https://discord.com/oauth2/authorize?client_id=ID&scope=bot%20applications.commands&permissions=1099780074646 and open the link
+5. Follow the instructions for the installation method you want to use
+
+#### Docker
+Requirements: [Docker](https://docs.docker.com/get-docker/)
+```bash 
+docker run -e MODBOT_AUTH_TOKEN="<discord-auth-token>" -e MODBOT_DATABASE_HOST="<database-host>" -e MODBOT_DATABASE_PASSWORD="<database-password>" ghcr.io/aternosorg/modbot
+```
+
+#### Direct Installation
+Requirements: [Node.js](https://nodejs.org/en/download/) (v20+), a [MySQL](https://dev.mysql.com/downloads/mysql/) database
+1. Download the code and run `npm ci`
+2. Run `npm start` to start the bot
 
 ### Contributing
 If you want to contribute you need to [fork](https://docs.github.com/en/github/getting-started-with-github/fork-a-repo)

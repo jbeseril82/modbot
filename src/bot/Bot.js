@@ -11,9 +11,13 @@ import config from './Config.js';
 import GuildWrapper from '../discord/GuildWrapper.js';
 import MessageDeleteEmbed from '../embeds/MessageDeleteEmbed.js';
 
+/**
+ * @import {Message} from 'discord.js';
+ */
+
 export class Bot {
     /**
-     * @type {Client}
+     * @type {import('discord.js').Client}
      */
     #client;
 
@@ -24,7 +28,7 @@ export class Bot {
             intents: [
                 GatewayIntentBits.Guilds,
                 GatewayIntentBits.GuildMembers,
-                GatewayIntentBits.GuildBans,
+                GatewayIntentBits.GuildModeration,
                 GatewayIntentBits.GuildMessages,
                 GatewayIntentBits.GuildMessageReactions,
                 GatewayIntentBits.DirectMessages,
@@ -44,6 +48,9 @@ export class Bot {
         });
     }
 
+    /**
+     * @returns {import('discord.js').Client}
+     */
     get client() {
         return this.#client;
     }
@@ -94,7 +101,7 @@ export class Bot {
      * log that a message has been deleted
      * @param {import('discord.js').Message} message
      * @param {string} reason
-     * @return {Promise<void>}
+     * @returns {Promise<void>}
      */
     async logMessageDeletion(message, reason) {
         const guild = new GuildWrapper(message.guild);

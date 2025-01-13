@@ -1,9 +1,13 @@
-import {BaseGuildTextChannel, Collection, RESTJSONErrorCodes} from 'discord.js';
+import {BaseGuildTextChannel, Collection, DiscordjsErrorCodes, RESTJSONErrorCodes} from 'discord.js';
 import RateLimiter from './RateLimiter.js';
 import bot from '../bot/Bot.js';
 import GuildSettings from '../settings/GuildSettings.js';
 import database from '../bot/Database.js';
 import logger from '../bot/Logger.js';
+
+/**
+ * @import {Guild, Role, Message} from 'discord.js';
+ */
 
 export default class GuildWrapper {
 
@@ -20,7 +24,7 @@ export default class GuildWrapper {
     guild;
 
     /**
-     * @param {import(discord.js).Guild} guild
+     * @param {Guild} guild
      */
     constructor(guild) {
         this.guild = guild;
@@ -28,14 +32,14 @@ export default class GuildWrapper {
 
     /**
      * @param {import("discord.js").Snowflake} id
-     * @return {Promise<GuildWrapper>}
+     * @returns {Promise<GuildWrapper>}
      */
     static async fetch(id) {
         try {
             return new this(await bot.client.guilds.fetch(id));
         }
         catch (e) {
-            if (e.code === RESTJSONErrorCodes.UnknownGuild) {
+            if ([RESTJSONErrorCodes.UnknownGuild, RESTJSONErrorCodes.MissingAccess].includes(e.code)) {
                 return null;
             }
             throw e;
@@ -44,7 +48,7 @@ export default class GuildWrapper {
 
     /**
      * get the guild settings of this guild
-     * @return {Promise<GuildSettings>}
+     * @returns {Promise<GuildSettings>}
      */
     async getSettings() {
         return GuildSettings.get(this.guild.id);
@@ -54,14 +58,17 @@ export default class GuildWrapper {
      * fetch a guild member
      * @param {import('discord.js').Snowflake} id user id
      * @param {boolean} [force] bypass cache
-     * @return {Promise<import('discord.js').GuildMember|null>}
+     * @returns {Promise<import('discord.js').GuildMember|null>}
      */
     async fetchMember(id, force = false) {
         try {
             return await this.guild.members.fetch({user: id, force});
         }
         catch (e) {
-            if ([RESTJSONErrorCodes.UnknownMember, RESTJSONErrorCodes.UnknownUser].includes(e.code)) {
+            if ([
+                RESTJSONErrorCodes.UnknownMember,
+                RESTJSONErrorCodes.UnknownUser
+            ].includes(e.code)) {
                 return null;
             }
             else {
@@ -73,14 +80,17 @@ export default class GuildWrapper {
     /**
      * fetch a role
      * @param {import('discord.js').Snowflake} id role id
-     * @return {Promise<null|Role>}
+     * @returns {Promise<null|Role>}
      */
     async fetchRole(id) {
         try {
             return await this.guild.roles.fetch(id);
         }
         catch (e) {
-            if (e.code === RESTJSONErrorCodes.UnknownRole) {
+            if ([
+                RESTJSONErrorCodes.UnknownRole,
+                RESTJSONErrorCodes.MissingAccess,
+            ].includes(e.code)) {
                 return null;
             }
             else {
@@ -92,7 +102,7 @@ export default class GuildWrapper {
     /**
      * fetch a ban
      * @param {import('discord.js').Snowflake} id user id
-     * @return {Promise<null|import('discord.js').GuildBan>}
+     * @returns {Promise<null|import('discord.js').GuildBan>}
      */
     async fetchBan(id) {
         try {
@@ -111,14 +121,18 @@ export default class GuildWrapper {
     /**
      * fetch a channel
      * @param {import("discord.js").Snowflake} id channel id
-     * @return {Promise<null|import("discord.js").GuildChannel>}
+     * @returns {Promise<null|import("discord.js").GuildChannel>}
      */
     async fetchChannel(id) {
         try {
             return await this.guild.channels.fetch(id);
         }
         catch (e) {
-            if ([RESTJSONErrorCodes.UnknownChannel, RESTJSONErrorCodes.MissingAccess].includes(e.code)) {
+            if ([
+                RESTJSONErrorCodes.UnknownChannel,
+                RESTJSONErrorCodes.MissingAccess,
+                DiscordjsErrorCodes.GuildChannelUnowned,
+            ].includes(e.code)) {
                 return null;
             }
             else {
@@ -130,8 +144,8 @@ export default class GuildWrapper {
     /**
      * try to send a dm
      * @param {import("discord.js").User} user
-     * @param {String} message
-     * @return {Promise<boolean>} was this successful
+     * @param {string} message
+     * @returns {Promise<boolean>} was this successful
      */
     async sendDM(user, message) {
         if (!await this.fetchMember(user.id)) return false;
@@ -154,7 +168,7 @@ export default class GuildWrapper {
      * send a message to a channel
      * @param {import('discord.js').Snowflake} channelId
      * @param {import('discord.js').MessagePayload|import('discord.js').MessageOptions} options
-     * @return {Promise<?Message>} Discord message (if it was sent)
+     * @returns {Promise<?Message>} Discord message (if it was sent)
      */
     async sendMessageToChannel(channelId, options) {
         if (!channelId) {
@@ -165,15 +179,16 @@ export default class GuildWrapper {
         const channel = await this.fetchChannel(channelId);
         if (channel && channel instanceof BaseGuildTextChannel) {
             try {
-                return channel.send(options);
+                return await channel.send(options);
             }
             catch (e) {
-                if ([RESTJSONErrorCodes.MissingPermissions,
+                if ([
+                    RESTJSONErrorCodes.MissingPermissions,
                     RESTJSONErrorCodes.MissingAccess,
                     RESTJSONErrorCodes.UnknownChannel,
                 ].includes(e.code)) {
-                    await logger.warn('Failed to send message to ' +
-                        `channel ${channelId} in ${this.guild.name} (${this.guild.id}): ${e.name}`, e);
+                    await logger.warn(`Failed to send message to ${channel.name} (${channelId})` +
+                        `in ${this.guild.name} (${this.guild.id}): ${e.name}`, e);
                 } else {
                     throw e;
                 }
@@ -185,8 +200,8 @@ export default class GuildWrapper {
 
     /**
      * send this message to the guild's log channel
-     * @param {import('discord.js').MessagePayload|import('discord.js').MessageOptions} options
-     * @return {Promise<?Message>} Discord message (if it was sent)
+     * @param {import('discord.js').MessagePayload|import('discord.js').MessageCreateOptions} options
+     * @returns {Promise<?Message>} Discord message (if it was sent)
      */
     async log(options) {
         const settings = await this.getSettings();
@@ -195,8 +210,8 @@ export default class GuildWrapper {
 
     /**
      * send this message to the guild's message log channel
-     * @param {import('discord.js').MessagePayload|import('discord.js').MessageOptions} options
-     * @return {Promise<?Message>} Discord message (if it was sent)
+     * @param {import('discord.js').MessagePayload|import('discord.js').MessageCreateOptions} options
+     * @returns {Promise<?Message>} Discord message (if it was sent)
      */
     async logMessage(options) {
         const settings = await this.getSettings();
@@ -205,8 +220,8 @@ export default class GuildWrapper {
 
     /**
      * send this message to the guild's join log channel
-     * @param {import('discord.js').MessagePayload|import('discord.js').MessageOptions} options
-     * @return {Promise<?Message>} Discord message (if it was sent)
+     * @param {import('discord.js').MessagePayload|import('discord.js').MessageCreateOptions} options
+     * @returns {Promise<?Message>} Discord message (if it was sent)
      */
     async logJoin(options) {
         const settings = await this.getSettings();
@@ -215,7 +230,7 @@ export default class GuildWrapper {
 
     /**
      * delete ALL data for this guild
-     * @return {Promise<void>}
+     * @returns {Promise<void>}
      */
     async deleteData() {
         return Promise.all([
@@ -229,8 +244,8 @@ export default class GuildWrapper {
 
     /**
      * get a guild from cache or create a new one
-     * @param {import("discord.js".Guild)} guild
-     * @return {GuildWrapper}
+     * @param {Guild} guild
+     * @returns {GuildWrapper}
      * @deprecated
      */
     static get(guild) {

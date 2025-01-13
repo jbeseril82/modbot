@@ -13,17 +13,30 @@ export default class CompletingAutoResponseCommand extends SubCommand {
                 const options = [];
 
                 /** @type {import('discord.js').Collection<number, AutoResponse>} */
-                const autoResponses = await AutoResponse.getAll(interaction.guildId);
+                let autoResponses = await AutoResponse.getAll(interaction.guildId);
 
-                const value = focussed.value;
+                const value = parseInt(focussed.value);
                 if (value) {
-                    options.unshift({name: value, value: parseInt(value)});
-                    autoResponses.filter(response => response.id.toString().includes(value));
+                    options.unshift({name: value, value: value});
+                    autoResponses = autoResponses.filter(response => response.id.toString().includes(focussed.value));
                 }
 
                 for (const response of autoResponses.values()) {
+                    let name = `[${response.id}] `;
+                    if (response.global) {
+                        name += 'global';
+                    }
+                    else {
+                        name += response.channels.map(channel => {
+                            channel = (/** @type {import('discord.js').Guild} */ interaction.guild)
+                                .channels.cache.get(channel);
+                            return '#' + (channel?.name ?? 'unknown');
+                        }).join(', ');
+                    }
+                    name += ` ${response.trigger.type}: ${response.trigger.asContentString()}`;
+
                     options.push({
-                        name: response.getOverview().slice(0, AUTOCOMPLETE_NAME_LIMIT),
+                        name: name.slice(0, AUTOCOMPLETE_NAME_LIMIT),
                         value: response.id
                     });
                 }

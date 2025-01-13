@@ -1,13 +1,24 @@
 import CompletingBadWordCommand from './CompletingBadWordCommand.js';
 import Confirmation from '../../../database/Confirmation.js';
 import {formatTime, parseTime, timeAfter} from '../../../util/timeutils.js';
-import {ActionRowBuilder, ModalBuilder, TextInputBuilder, TextInputStyle} from 'discord.js';
+import {
+    ActionRowBuilder,
+    channelMention,
+    ChannelSelectMenuBuilder, ChannelType,
+    ModalBuilder,
+    TextInputBuilder,
+    TextInputStyle
+} from 'discord.js';
 import ErrorEmbed from '../../../embeds/ErrorEmbed.js';
-import ChannelWrapper from '../../../discord/ChannelWrapper.js';
-import {channelSelectMenu} from '../../../util/channels.js';
 import colors from '../../../util/colors.js';
 import BadWord from '../../../database/BadWord.js';
 import Punishment from '../../../database/Punishment.js';
+import {SELECT_MENU_OPTIONS_LIMIT} from '../../../util/apiLimits.js';
+import config from '../../../bot/Config.js';
+
+/**
+ * @import {PunishmentAction} from '../../../database/Punishment.js';
+ */
 
 export default class EditBadWordCommand extends CompletingBadWordCommand {
 
@@ -64,12 +75,17 @@ export default class EditBadWordCommand extends CompletingBadWordCommand {
                 }, {
                     name: 'Strike user',
                     value: 'strike'
-                }, {
-                    name: 'Send direct message',
-                    value: 'DM'
                 }
             )
         );
+
+        if (config.data.googleCloud.vision.enabled) {
+            builder.addBooleanOption(option => option
+                .setName('image-detection')
+                .setDescription('Respond to images containing text that matches the trigger')
+                .setRequired(false));
+        }
+
         return super.buildOptions(builder);
     }
 
@@ -82,16 +98,17 @@ export default class EditBadWordCommand extends CompletingBadWordCommand {
             return;
         }
 
-        const global = interaction.options.getBoolean('global');
-        const type = interaction.options.getString('type');
-        const punishment = interaction.options.getString('punishment');
-        await this.showModal(interaction, badWord, global, type, punishment);
+        const global = interaction.options.getBoolean('global'),
+            type = interaction.options.getString('type'),
+            punishment = interaction.options.getString('punishment'),
+            vision = interaction.options.getBoolean('image-detection');
+        await this.showModal(interaction, badWord, global, type, punishment, vision);
     }
 
     async executeButton(interaction) {
         const parts = interaction.customId.split(':');
         const badWord = /** @type {?BadWord} */
-            await BadWord.getByID(parts[3], interaction.guildId);
+            await BadWord.getByID(parts[2], interaction.guildId);
 
         if (!badWord) {
             await interaction.update({
@@ -101,7 +118,7 @@ export default class EditBadWordCommand extends CompletingBadWordCommand {
             return;
         }
 
-        await this.showModal(interaction, badWord, null, null, null);
+        await this.showModal(interaction, badWord, null, null, null, null);
     }
 
     /**
@@ -111,15 +128,28 @@ export default class EditBadWordCommand extends CompletingBadWordCommand {
      * @param {?boolean} global
      * @param {?string} type
      * @param {?string} punishment
-     * @return {Promise<void>}
+     * @param {?boolean} vision
+     * @returns {Promise<void>}
      */
-    async showModal(interaction, badWord, global, type, punishment) {
+    async showModal(
+        interaction,
+        badWord,
+        global,
+        type,
+        punishment,
+        vision,
+    ) {
         global ??= badWord.global;
         type ??= badWord.trigger.type;
-        punishment ??= badWord.punishment;
+        punishment ??= badWord.punishment.action;
+        vision ??= badWord.enableVision;
 
-        const confirmation = new Confirmation({global, type, id: badWord.id, punishment}, timeAfter('1 hour'));
+        let trigger = badWord.trigger;
+        if (type === 'regex') {
+            trigger = trigger.toRegex();
+        }
 
+        const confirmation = new Confirmation({global, type, id: badWord.id, punishment, vision}, timeAfter('1 hour'));
         const modal = new ModalBuilder()
             .setTitle(`Edit Bad-word #${badWord.id}`)
             .setCustomId(`bad-word:edit:${await confirmation.save()}`)
@@ -134,32 +164,49 @@ export default class EditBadWordCommand extends CompletingBadWordCommand {
                             .setStyle(TextInputStyle.Short)
                             .setPlaceholder(BadWord.getTriggerPlaceholder(type))
                             .setLabel('Trigger')
-                            .setValue(badWord.trigger.asContentString()),
+                            .setValue(trigger.asContentString()),
                     ),
                 /** @type {*} */
                 new ActionRowBuilder()
                     .addComponents(
                         /** @type {*} */
                         new TextInputBuilder()
-                            .setRequired(true)
+                            .setRequired(false)
                             .setCustomId('response')
                             .setStyle(TextInputStyle.Paragraph)
                             .setPlaceholder('Hi there :wave:')
                             .setLabel('Response')
                             .setValue(badWord.response)
+                            .setMinLength(1)
+                            .setMaxLength(4000)
                     ),
                 /** @type {*} */
                 new ActionRowBuilder()
                     .addComponents(
                         /** @type {*} */
                         new TextInputBuilder()
-                            .setRequired(true)
+                            .setRequired(false)
                             .setCustomId('priority')
-                            .setStyle(TextInputStyle.Paragraph)
+                            .setStyle(TextInputStyle.Short)
                             .setPlaceholder('0')
                             .setLabel('Priority')
-                            .setValue(badWord.priority)
-                    )
+                            .setValue(badWord.priority.toString())
+                            .setMinLength(1)
+                            .setMaxLength(10)
+                    ),
+                /** @type {*} */
+                new ActionRowBuilder()
+                    .addComponents(
+                        /** @type {*} */
+                        new TextInputBuilder()
+                            .setRequired(false)
+                            .setCustomId('dm')
+                            .setStyle(TextInputStyle.Paragraph)
+                            .setPlaceholder('This is a direct message sent to the user when their message was deleted')
+                            .setLabel('Direct Message')
+                            .setMinLength(1)
+                            .setMaxLength(3000)
+                    ),
             );
 
         if (['ban', 'mute'].includes(punishment)) {
@@ -169,12 +216,12 @@ export default class EditBadWordCommand extends CompletingBadWordCommand {
                     .addComponents(
                         /** @type {*} */
                         new TextInputBuilder()
-                            .setRequired(true)
+                            .setRequired(false)
                             .setCustomId('duration')
                             .setStyle(TextInputStyle.Short)
                             .setPlaceholder('Punishment duration')
                             .setLabel('duration')
-                            .setMinLength(1)
+                            .setMinLength(0)
                             .setMaxLength(4000)
                             .setValue(formatTime(badWord.punishment.duration))
                     )
@@ -201,20 +248,25 @@ export default class EditBadWordCommand extends CompletingBadWordCommand {
             return;
         }
 
-        let trigger, response, duration = null, priority;
+        let trigger, response, duration = null, priority = null, dm = null;
         for (let component of interaction.components) {
             component = component.components[0];
-            if (component.customId === 'trigger') {
-                trigger = component.value;
-            }
-            else if (component.customId === 'response') {
-                response = component.value;
-            }
-            else if (component.customId === 'duration') {
-                duration = parseTime(component.value) || null;
-            }
-            else if (component.customId === 'priority') {
-                priority = parseInt(component.value) || 0;
+            switch (component.customId) {
+                case 'trigger':
+                    trigger = component.value;
+                    break;
+                case 'response':
+                    response = component.value?.substring?.(0, 4000);
+                    break;
+                case 'duration':
+                    duration = parseTime(component.value) || null;
+                    break;
+                case 'priority':
+                    priority = parseInt(component.value) || 0;
+                    break;
+                case 'dm':
+                    dm = component.value?.substring?.(0, 3000);
+                    break;
             }
         }
 
@@ -231,32 +283,32 @@ export default class EditBadWordCommand extends CompletingBadWordCommand {
                 confirmation.data.punishment,
                 duration,
                 priority,
+                dm,
+                confirmation.data.vision,
             );
-        }
-        else {
+        } else {
             confirmation.data.trigger = trigger;
             confirmation.data.response = response;
             confirmation.data.duration = duration;
             confirmation.data.priority = priority;
             confirmation.expires = timeAfter('30 min');
 
-            const channels = (await interaction.guild.channels.fetch())
-                .map(channel => new ChannelWrapper(channel));
-
             await interaction.reply({
                 ephemeral: true,
-                content: 'Select channels for the bad-word',
+                content: `Select channels for the bad-word. Currently selected channels: ${
+                    badWord.channels.map(c => channelMention(c)).join(', ')}`,
                 components: [
                     /** @type {ActionRowBuilder} */
-                    new ActionRowBuilder().addComponents(/** @type {*} */
-                        channelSelectMenu(channels, badWord.channels)
-                            .setCustomId('noop')
-                            .setDisabled(true)
-                    ),
-                    /** @type {ActionRowBuilder} */
-                    new ActionRowBuilder().addComponents(/** @type {*} */
-                        channelSelectMenu(channels)
-                            .setCustomId(`bad-word:edit:${await confirmation.save()}`)
+                    new ActionRowBuilder().addComponents(/** @type {*} */new ChannelSelectMenuBuilder()
+                        .addChannelTypes(/** @type {*} */[
+                            ChannelType.GuildText,
+                            ChannelType.GuildForum,
+                            ChannelType.GuildAnnouncement,
+                            ChannelType.GuildStageVoice,
+                        ])
+                        .setMinValues(1)
+                        .setMaxValues(SELECT_MENU_OPTIONS_LIMIT)
+                        .setCustomId(`bad-word:edit:${await confirmation.save()}`)
                     )
                 ]
             });
@@ -283,6 +335,7 @@ export default class EditBadWordCommand extends CompletingBadWordCommand {
             confirmation.data.punishment,
             confirmation.data.duration,
             confirmation.data.priority,
+            confirmation.data.vision,
         );
     }
 
@@ -295,12 +348,27 @@ export default class EditBadWordCommand extends CompletingBadWordCommand {
      * @param {string} type
      * @param {string} trigger
      * @param {string} response
-     * @param {string} punishment
+     * @param {PunishmentAction} punishment
      * @param {?number} duration
      * @param {number} priority
-     * @return {Promise<*>}
+     * @param {?string} dm
+     * @param {?boolean} vision
+     * @returns {Promise<*>}
      */
-    async update(interaction, id, global, channels, type, trigger, response, punishment, duration, priority) {
+    async update(
+        interaction,
+        id,
+        global,
+        channels,
+        type,
+        trigger,
+        response,
+        punishment,
+        duration,
+        priority,
+        dm,
+        vision,
+    ) {
         const badWord = /** @type {?BadWord} */
             await BadWord.getByID(id, interaction.guildId);
 
@@ -311,12 +379,14 @@ export default class EditBadWordCommand extends CompletingBadWordCommand {
 
         badWord.global = global;
         badWord.channels = channels;
+        badWord.enableVision = vision;
         const triggerResponse = BadWord.getTrigger(type, trigger);
         if (!triggerResponse.success) {
             return interaction.reply(ErrorEmbed.message(triggerResponse.message));
         }
         badWord.trigger = triggerResponse.trigger;
-        badWord.response = response;
+        badWord.response = response || 'disabled';
+        badWord.dm = dm || 'disabled';
         badWord.punishment = new Punishment({action: punishment, duration});
         badWord.priority = priority;
         await badWord.save();

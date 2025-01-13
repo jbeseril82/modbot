@@ -1,10 +1,14 @@
 import ChatTriggeredFeature from './ChatTriggeredFeature.js';
 import TypeChecker from '../settings/TypeChecker.js';
 import {channelMention} from 'discord.js';
-import KeyValueEmbed from '../embeds/KeyValueEmbed.js';
-import {yesNo} from '../util/format.js';
-import {EMBED_FIELD_LIMIT} from '../util/apiLimits.js';
 import colors from '../util/colors.js';
+import ChatFeatureEmbed from '../embeds/ChatFeatureEmbed.js';
+
+/**
+ * @import {Trigger} from './triggers/Trigger.js';
+ * @import {Punishment} from './Punishment.js';
+ * @import {EmbedWrapper} from '../embeds/EmbedWrapper.js';
+ */
 
 /**
  * Class representing an auto response
@@ -13,18 +17,19 @@ export default class AutoResponse extends ChatTriggeredFeature {
 
     static tableName = 'responses';
 
-    static columns = ['guildid', 'trigger', 'response', 'global', 'channels'];
+    static columns = ['guildid', 'trigger', 'response', 'global', 'channels', 'enableVision'];
 
     /**
      * constructor - create an auto response
      * @param {import('discord.js').Snowflake} gid guild ID
-     * @param {Object} json options
+     * @param {object} json options
      * @param {Trigger} json.trigger filter that triggers the response
-     * @param {String} json.response message to send to the channel
-     * @param {Boolean} json.global does this apply to all channels in this guild
+     * @param {string} json.response message to send to the channel
+     * @param {boolean} json.global does this apply to all channels in this guild
      * @param {import('discord.js').Snowflake[]} [json.channels] channels that this applies to
-     * @param {Number} [id] id in DB
-     * @return {AutoResponse} the auto response
+     * @param {boolean} [json.enableVision] enable vision api for this auto response
+     * @param {number} [id] id in DB
+     * @returns {AutoResponse} the auto response
      */
     constructor(gid, json, id) {
         super(id, json.trigger);
@@ -34,6 +39,7 @@ export default class AutoResponse extends ChatTriggeredFeature {
             this.response = json.response;
             this.global = json.global;
             this.channels = json.channels;
+            this.enableVision = json.enableVision ?? false;
         }
 
         if (!this.channels) {
@@ -43,7 +49,7 @@ export default class AutoResponse extends ChatTriggeredFeature {
 
     /**
      * check if the types of this object are a valid auto-response
-     * @param {Object} json
+     * @param {object} json
      */
     static checkTypes(json) {
         TypeChecker.assertOfTypes(json, ['object'], 'Data object');
@@ -60,6 +66,8 @@ export default class AutoResponse extends ChatTriggeredFeature {
         }
         TypeChecker.assertString(json.trigger.content, 'Content');
         TypeChecker.assertStringUndefinedOrNull(json.trigger.flags, 'Flags');
+
+        TypeChecker.assertBooleanOrNull(json.enableVision, 'Enable Vision');
     }
 
     /**
@@ -67,29 +75,17 @@ export default class AutoResponse extends ChatTriggeredFeature {
      * @returns {(*|string)[]}
      */
     serialize() {
-        return [this.gid, JSON.stringify(this.trigger), this.response, this.global, this.channels.join(',')];
+        return [this.gid, JSON.stringify(this.trigger), this.response, this.global, this.channels.join(','), this.enableVision];
     }
 
     /**
      * generate an Embed displaying the info of this response
-     * @param {String}        title
-     * @param {Number}        color
+     * @param {string}        title
+     * @param {number}        color
      * @returns {EmbedWrapper}
      */
     embed(title = 'Auto-response', color = colors.GREEN) {
-        return new KeyValueEmbed()
-            .setTitle(title + ` [${this.id}]`)
-            .setColor(color)
-            .addPair('Trigger', this.trigger.asString())
-            .addPair('Global', yesNo(this.global))
-            .addPairIf(!this.global, 'Channels', this.channels.map(channelMention).join(', '))
-            .addFields(
-                /** @type {any} */
-                {
-                    name: 'Response',
-                    value: this.response.substring(0, EMBED_FIELD_LIMIT)
-                },
-            );
+        return new ChatFeatureEmbed(this, title, color);
     }
 
     /**
@@ -97,12 +93,21 @@ export default class AutoResponse extends ChatTriggeredFeature {
      * @param {import('discord.js').Snowflake} guildID
      * @param {boolean} global
      * @param {import('discord.js').Snowflake[]|null} channels
-     * @param {String} triggerType
-     * @param {String} triggerContent
-     * @param {String} responseText
+     * @param {string} triggerType
+     * @param {string} triggerContent
+     * @param {string} responseText
+     * @param {?boolean} enableVision
      * @returns {Promise<{success:boolean, response: ?AutoResponse, message: ?string}>}
      */
-    static async new(guildID, global, channels, triggerType, triggerContent, responseText) {
+    static async new(
+        guildID,
+        global,
+        channels,
+        triggerType,
+        triggerContent,
+        responseText,
+        enableVision
+    ) {
         let trigger = this.getTrigger(triggerType, triggerContent);
         if (!trigger.success)
             return {success: false, response: null, message: trigger.message};
@@ -111,7 +116,8 @@ export default class AutoResponse extends ChatTriggeredFeature {
             trigger: trigger.trigger,
             global,
             channels,
-            response: responseText
+            response: responseText,
+            enableVision,
         });
         await response.save();
         return {success: true, response: response, message: null};

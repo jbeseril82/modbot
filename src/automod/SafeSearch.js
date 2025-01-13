@@ -1,34 +1,32 @@
-import config from '../bot/Config.js';
 import GuildSettings from '../settings/GuildSettings.js';
-import vision from '@google-cloud/vision';
 import Cache from '../bot/Cache.js';
 import Request from '../bot/Request.js';
 import database from '../bot/Database.js';
+import logger from '../bot/Logger.js';
+import cloudVision from '../apis/CloudVision.js';
+
+/**
+ * @import {google} from '@google-cloud/vision';
+ */
 
 const CACHE_DURATION = 60 * 60 * 1000;
 
 export default class SafeSearch {
     #cache = new Cache();
 
-    constructor() {
-        if (this.isEnabled) {
-            this.annotatorClient = new vision.ImageAnnotatorClient({
-                credentials: config.data.googleCloud.credentials
-            });
-        }
-    }
-
-    get isEnabled() {
-        return config.data.googleCloud.vision?.enabled;
-    }
+    /**
+     * A map of hashes to resolve functions that are currently waiting for a response from the api
+     * @type {Map<string, Function[]>}
+     */
+    #requesting = new Map();
 
     /**
      * is safe search filtering enabled in this guild
      * @param {import('discord.js').Guild} guild
-     * @return {Promise<boolean>}
+     * @returns {Promise<boolean>}
      */
     async isEnabledInGuild(guild) {
-        if (!this.isEnabled) {
+        if (!cloudVision.isEnabled) {
             return false;
         }
 
@@ -39,11 +37,11 @@ export default class SafeSearch {
     /**
      * detect images in this message using the safe search api
      * @param {import('discord.js').Message} message
-     * @return {Promise<?{type: string, value: number}>}
+     * @returns {Promise<?{type: string, value: number}>}
      */
     async detect(message) {
         /** @type {import('discord.js').Collection<string, import('discord.js').Attachment>} */
-        const images = message.attachments.filter(attachment => attachment.contentType.startsWith('image/'));
+        const images = cloudVision.getImages(message);
         if (!images.size) {
             return null;
         }
@@ -51,6 +49,10 @@ export default class SafeSearch {
         let maxType = null, maxValue = null;
         for (const image of images.values()) {
             const safeSearchAnnotation = await this.request(image);
+            if (!safeSearchAnnotation) {
+                continue;
+            }
+
             for (const type of ['adult', 'medical', 'violence', 'racy']) {
                 const likelihood = this.getLikelihoodAsNumber(safeSearchAnnotation[type]);
                 if (!maxValue || likelihood > maxValue) {
@@ -65,7 +67,7 @@ export default class SafeSearch {
 
     /**
      * @param {import('discord.js').Attachment} image
-     * @return {Promise<google.cloud.vision.v1.ISafeSearchAnnotation>}
+     * @returns {Promise<google.cloud.vision.v1.ISafeSearchAnnotation>}
      */
     async request(image) {
         const hash = await new Request(image.proxyURL).getHash();
@@ -75,15 +77,38 @@ export default class SafeSearch {
             return cached;
         }
 
-        const [{safeSearchAnnotation}] = await this.annotatorClient.safeSearchDetection(image.url);
-        this.#cache.set(hash, safeSearchAnnotation, CACHE_DURATION);
-        await database.query('INSERT INTO safeSearch (hash, data) VALUES (?, ?)', hash, JSON.stringify(safeSearchAnnotation));
+        if (this.#requesting.has(hash)) {
+            return await new Promise(resolve => {
+                this.#requesting.get(hash).push(resolve);
+            });
+        }
+
+        this.#requesting.set(hash, []);
+
+        let safeSearchAnnotation = null;
+        try {
+            [{safeSearchAnnotation}] = await cloudVision.annotatorClient.safeSearchDetection(image.url);
+
+            if (safeSearchAnnotation) {
+                this.#cache.set(hash, safeSearchAnnotation, CACHE_DURATION);
+                await database.query('INSERT INTO safeSearch (hash, data) VALUES (?, ?)', hash, JSON.stringify(safeSearchAnnotation));
+            }
+        }
+        catch (error) {
+            await logger.error(error);
+        }
+
+        for (const resolve of this.#requesting.get(hash)) {
+            resolve(safeSearchAnnotation);
+        }
+        this.#requesting.delete(hash);
+
         return safeSearchAnnotation;
     }
 
     /**
      * @param {string} hash
-     * @return {Promise<google.cloud.vision.v1.ISafeSearchAnnotation>}
+     * @returns {Promise<google.cloud.vision.v1.ISafeSearchAnnotation>}
      */
     async #getFromDatabase(hash) {
         const result = await database.query('SELECT data FROM safeSearch WHERE hash = ?', hash);
@@ -96,7 +121,7 @@ export default class SafeSearch {
     /**
      * convert a likelihood to a number for easy comparison
      * @param {string} likelihood
-     * @return {number}
+     * @returns {number}
      */
     getLikelihoodAsNumber(likelihood) {
         switch (likelihood) {

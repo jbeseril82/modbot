@@ -1,15 +1,24 @@
 import * as mysql from 'mysql2/promise';
 import logger from './Logger.js';
 import config from './Config.js';
+import CommentFieldMigration from '../database/migrations/CommentFieldMigration.js';
+import {asyncFilter} from '../util/util.js';
+import BadWordVisionMigration from '../database/migrations/BadWordVisionMigration.js';
+import AutoResponseVisionMigration from '../database/migrations/AutoResponseVisionMigration.js';
+import DMMigration from '../database/migrations/DMMigration.js';
+
+/**
+ * @import {QueryError} from 'mysql2';
+ */
 
 export class Database {
     /**
-     * @type {import("mysql2").Connection}
+     * @type {import('mysql2').Connection}
      */
     #connection = null;
 
     /**
-     * @type {{resolve: function, reject: function}[]}
+     * @type {{resolve: Function, reject: Function}[]}
      */
     #waiting = [];
 
@@ -30,7 +39,6 @@ export class Database {
 
     /**
      * Wait until a working MySQL connection is available
-     *
      * @returns {Promise<void>}
      */
     waitForConnection() {
@@ -55,17 +63,15 @@ export class Database {
                 waiting.resolve();
             }
             this.#waiting = [];
-        }
-        catch (error) {
-            return this.#handleFatalError(error);
+        } catch (error) {
+            this.#handleFatalError(error);
         }
     }
 
     #handleConnectionError(err) {
         if (err.fatal) {
             this.#handleFatalError(err);
-        }
-        else {
+        } else {
             logger.error('A database error occurred', err)
                 .catch(console.error);
         }
@@ -73,8 +79,7 @@ export class Database {
 
     /**
      * Handle connection error
-     *
-     * @param err
+     * @param {QueryError} err
      * @private
      */
     #handleFatalError(err) {
@@ -93,38 +98,62 @@ export class Database {
 
     /**
      * Create required tables
-     *
-     * @return {Promise<void>}
+     * @returns {Promise<void>}
      */
     async createTables() {
         await this.query('CREATE TABLE IF NOT EXISTS `channels` (`id` VARCHAR(20) NOT NULL, `config` TEXT NOT NULL, PRIMARY KEY (`id`), `guildid` VARCHAR(20))');
         await this.query('CREATE TABLE IF NOT EXISTS `guilds` (`id` VARCHAR(20) NOT NULL, `config` TEXT NOT NULL, PRIMARY KEY (`id`))');
         await this.query('CREATE TABLE IF NOT EXISTS `users` (`id` VARCHAR(20) NOT NULL, `config` TEXT NOT NULL, PRIMARY KEY (`id`))');
-        await this.query('CREATE TABLE IF NOT EXISTS `responses` (`id` int PRIMARY KEY AUTO_INCREMENT, `guildid` VARCHAR(20) NOT NULL, `trigger` TEXT NOT NULL, `response` TEXT NOT NULL, `global` BOOLEAN NOT NULL, `channels` TEXT NULL DEFAULT NULL)');
-        await this.query('CREATE TABLE IF NOT EXISTS `badWords` (`id` int PRIMARY KEY AUTO_INCREMENT, `guildid` VARCHAR(20) NOT NULL, `trigger` TEXT NOT NULL, `punishment` TEXT NOT NULL, `response` TEXT NOT NULL, `global` BOOLEAN NOT NULL, `channels` TEXT NULL DEFAULT NULL, `priority` int NULL)');
-        await this.query('CREATE TABLE IF NOT EXISTS `moderations` (`id` int PRIMARY KEY AUTO_INCREMENT, `guildid` VARCHAR(20) NOT NULL, `userid` VARCHAR(20) NOT NULL, `action` VARCHAR(10) NOT NULL,`created` bigint NOT NULL, `value` int DEFAULT 0,`expireTime` bigint NULL DEFAULT NULL, `reason` TEXT,`moderator` VARCHAR(20) NULL DEFAULT NULL, `active` BOOLEAN DEFAULT TRUE)');
+        await this.query('CREATE TABLE IF NOT EXISTS `responses` (`id` int PRIMARY KEY AUTO_INCREMENT, `guildid` VARCHAR(20) NOT NULL, `trigger` TEXT NOT NULL, `response` TEXT NOT NULL, `global` BOOLEAN NOT NULL, `channels` TEXT NULL DEFAULT NULL, `enableVision` BOOLEAN DEFAULT FALSE)');
+        await this.query('CREATE TABLE IF NOT EXISTS `badWords` (`id` int PRIMARY KEY AUTO_INCREMENT, `guildid` VARCHAR(20) NOT NULL, `trigger` TEXT NOT NULL, `punishment` TEXT NOT NULL, `response` TEXT NOT NULL, `global` BOOLEAN NOT NULL, `channels` TEXT NULL DEFAULT NULL, `priority` int NULL, `dm` TEXT NULL DEFAULT NULL, `enableVision` BOOLEAN DEFAULT FALSE)');
+        await this.query('CREATE TABLE IF NOT EXISTS `moderations` (`id` int PRIMARY KEY AUTO_INCREMENT, `guildid` VARCHAR(20) NOT NULL, `userid` VARCHAR(20) NOT NULL, `action` VARCHAR(10) NOT NULL, `created` bigint NOT NULL, `value` int DEFAULT 0, `expireTime` bigint NULL DEFAULT NULL, `reason` TEXT, `comment` TEXT NULL DEFAULT NULL, `moderator` VARCHAR(20) NULL DEFAULT NULL, `active` BOOLEAN DEFAULT TRUE)');
         await this.query('CREATE TABLE IF NOT EXISTS `confirmations` (`id` int PRIMARY KEY AUTO_INCREMENT, `data` TEXT NOT NULL, `expires` bigint NOT NULL)');
         await this.query('CREATE TABLE IF NOT EXISTS `safeSearch` (`hash` CHAR(64) PRIMARY KEY, `data` TEXT NOT NULL)');
     }
 
+    async getMigrations() {
+        return await asyncFilter([
+            new CommentFieldMigration(this),
+            new BadWordVisionMigration(this),
+            new AutoResponseVisionMigration(this),
+            new DMMigration(this),
+        ], async migration => await migration.check());
+    }
+
+    async runMigrations() {
+        const migrations = await this.getMigrations();
+
+        if (migrations.length === 0) {
+            return;
+        }
+
+        await logger.info(`Running ${migrations.length} migrations`);
+        for (let migration of migrations) {
+            await migration.run();
+        }
+    }
+
     /**
      * Execute query and return all results
-     *
      * @param {string} sql
      * @param {string|number|null} values
-     * @returns {Promise<Object[]>}
+     * @returns {Promise<object[]>}
      */
     async queryAll(sql, ...values) {
         await this.waitForConnection();
-        return (await this.#connection.query(sql, values))[0];
+        try {
+            return (await this.#connection.query(sql, values))[0];
+        } catch (e) {
+            this.#handleConnectionError(e);
+            throw e;
+        }
     }
 
     /**
      * Execute query and return the first result
-     *
      * @param {string} sql
      * @param {*} values
-     * @returns {Promise<Object|null>}
+     * @returns {Promise<object|null>}
      */
     async query(sql, ...values) {
         return (await this.queryAll(sql, ...values))[0] ?? null;
@@ -133,31 +162,10 @@ export class Database {
     /**
      * Escape table/column names
      * @param {string|string[]} ids
-     * @return {string}
+     * @returns {string}
      */
     escapeId(ids) {
         return this.#connection.escapeId(ids);
-    }
-
-    /**
-     * add a moderation
-     * @param {import('discord.js').Snowflake}          guildId       id of the guild
-     * @param {import('discord.js').Snowflake}          userId        id of the moderated user
-     * @param {String}                                  action        moderation type (e.g. 'ban')
-     * @param {String}                                  reason        reason for the moderation
-     * @param {Number}                                  [duration]    duration of the moderation
-     * @param {import('discord.js').Snowflake}          [moderatorId] id of the moderator
-     * @param {Number}                                  [value]       strike count
-     * @return {Promise<Number>} the id of the moderation
-     */
-    async addModeration(guildId, userId, action, reason, duration, moderatorId, value= 0) {
-        //disable old moderations
-        await this.query('UPDATE moderations SET active = FALSE WHERE active = TRUE AND guildid = ? AND userid = ? AND action = ?', guildId, userId, action);
-
-        const now = Math.floor(Date.now()/1000);
-        /** @property {Number} insertId*/
-        const insert = await this.queryAll('INSERT INTO moderations (guildid, userid, action, created, expireTime, reason, moderator, value) VALUES (?,?,?,?,?,?,?,?)',guildId, userId, action, now, duration ? now + duration : null, reason, moderatorId, value);
-        return insert.insertId;
     }
 }
 

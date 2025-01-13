@@ -1,6 +1,6 @@
 import Settings from './Settings.js';
 import TypeChecker from './TypeChecker.js';
-import {channelMention, Collection, EmbedBuilder, roleMention} from 'discord.js';
+import {bold, channelMention, Collection, EmbedBuilder, roleMention} from 'discord.js';
 import Punishment, {PunishmentAction} from '../database/Punishment.js';
 import Zendesk from '../apis/Zendesk.js';
 import colors from '../util/colors.js';
@@ -8,11 +8,33 @@ import {formatTime, parseTime} from '../util/timeutils.js';
 import YouTubePlaylist from '../apis/YouTubePlaylist.js';
 import {inlineEmojiIfExists} from '../util/format.js';
 import config from '../bot/Config.js';
+import {deepMerge} from '../util/util.js';
 
 /**
- * @typedef {Object} SafeSearchSettings
+ * @typedef {object} SafeSearchSettings
  * @property {boolean} enabled
  * @property {number} strikes
+ * @property {number} likelihood likelihood required for a message deletion (-3 to 2)
+ */
+
+/**
+ * @typedef {object} GuildSettingsJSON
+ * @property  {import('discord.js').Snowflake}   [logChannel]         id of the log channel
+ * @property  {import('discord.js').Snowflake}   [messageLogChannel]  id of the message log channel
+ * @property  {import('discord.js').Snowflake}   [joinLogChannel]     id of the join log channel
+ * @property  {import('discord.js').Snowflake}   [mutedRole]          id of the muted role
+ * @property  {import('discord.js').Snowflake[]} [modRoles]           role ids that can execute commands
+ * @property  {import('discord.js').Snowflake[]} [protectedRoles]     role ids that can't be targeted by moderations
+ * @property  {object}                           [punishments]        automatic punishments for strikes
+ * @property  {string}                           [playlist]           id of YouTube playlist for tutorials
+ * @property  {string}                           [helpcenter]         subdomain of the zendesk help center
+ * @property  {boolean}                          [invites]            allow invites (can be overwritten per channel)
+ * @property  {number}                           [linkCooldown]       cooldown on links in s (user based)
+ * @property  {number}                           [attachmentCooldown] cooldown on attachments in s (user based)
+ * @property  {boolean}                          [caps]               should caps be automatically deleted
+ * @property  {number}                           [antiSpam]           should message spam detection be enabled
+ * @property  {number}                           [similarMessages]    should similar message detection be enabled
+ * @property  {?SafeSearchSettings}              [safeSearch]         safe search configuration
  */
 
 /**
@@ -34,59 +56,68 @@ export default class GuildSettings extends Settings {
         11: Punishment.from(PunishmentAction.BAN),
     };
 
-    #protectedRoles = [];
+    #defaults = {
+        invites: true,
+        linkCooldown: parseTime('10s'),
+        attachmentCooldown: parseTime('10s'),
+        caps: false,
+        antiSpam: 10,
+        similarMessages: 3,
+        safeSearch: {
+            enabled: true,
+            strikes: 1,
+            likelihood: 1,
+        },
+    };
+
+    /**
+     * A list of role ids that can't be targeted by moderations
+     * @type {Set<import('discord.js').Snowflake>}
+     */
+    protectedRoles = new Set();
 
     /**
      * @param  {import('discord.js').Snowflake}   id                        guild id
-     * @param  {Object}                           [json]                    options
-     * @param  {import('discord.js').Snowflake}   [json.logChannel]         id of the log channel
-     * @param  {import('discord.js').Snowflake}   [json.messageLogChannel]  id of the message log channel
-     * @param  {import('discord.js').Snowflake}   [json.joinLogChannel]     id of the join log channel
-     * @param  {import('discord.js').Snowflake}   [json.mutedRole]          id of the muted role
-     * @param  {import('discord.js').Snowflake[]} [json.modRoles]           role ids that can execute commands
-     * @param  {import('discord.js').Snowflake[]} [json.protectedRoles]     role ids that can't be targeted by moderations
-     * @param  {Object}                           [json.punishments]        automatic punishments for strikes
-     * @param  {String}                           [json.playlist]           id of YouTube playlist for tutorials
-     * @param  {String}                           [json.helpcenter]         subdomain of the zendesk help center
-     * @param  {Boolean}                          [json.invites]            allow invites (can be overwritten per channel)
-     * @param  {Number}                           [json.linkCooldown]       cooldown on links in s (user based)
-     * @param  {Number}                           [json.attachmentCooldown] cooldown on attachments in s (user based)
-     * @param  {Boolean}                          [json.caps]               should caps be automatically deleted
-     * @param  {Number}                           [json.antiSpam]           should message spam detection be enabled
-     * @param  {Number}                           [json.similarMessages]    should similar message detection be enabled
-     * @param  {?SafeSearchSettings}              [json.safeSearch]         safe search configuration
-     * @return {GuildSettings}
+     * @param  {GuildSettingsJSON}                [json]                 json object
+     * @returns {GuildSettings}
      */
     constructor(id, json = {}) {
         super(id);
+        json = deepMerge(json, this.#defaults);
 
-        this.logChannel = json.logChannel;
-        this.messageLogChannel = json.messageLogChannel;
-        this.joinLogChannel = json.joinLogChannel;
+        for (const setting of [
+            // logging
+            'logChannel',
+            'messageLogChannel',
+            'joinLogChannel',
+            // roles
+            'mutedRole',
+            // external
+            'playlist',
+            'helpcenter',
+            // automod
+            'invites',
+            'linkCooldown',
+            'attachmentCooldown',
+            'caps',
+            'antiSpam',
+            'similarMessages',
+            'safeSearch',
+        ]) {
+            this[setting] = json[setting];
+        }
 
-        this.mutedRole = json.mutedRole;
         if (json.protectedRoles instanceof Array)
-            this.#protectedRoles = json.protectedRoles;
+            this.protectedRoles = new Set(json.protectedRoles);
         if (json.modRoles instanceof Array)
-            this.#protectedRoles.push(...json.modRoles);
+            json.modRoles.forEach(role => this.protectedRoles.add(role));
 
         this.#punishments = json.punishments ?? this.#punishments;
-
-        this.playlist = json.playlist;
-        this.helpcenter = json.helpcenter;
-
-        this.invites = json.invites ?? true;
-        this.linkCooldown = json.linkCooldown ?? parseTime('10s');
-        this.attachmentCooldown = json.attachmentCooldown ?? parseTime('10s');
-        this.caps = json.caps ?? false;
-        this.antiSpam = json.antiSpam ?? 10;
-        this.similarMessages = json.similarMessages ?? 3;
-        this.safeSearch = json.safeSearch ?? {enabled: true, strikes: 1};
     }
 
     /**
      * check if the types of this object are a valid guild settings
-     * @param {Object} json
+     * @param {object} json
      * @throws {TypeError} incorrect types
      */
     static checkTypes(json) {
@@ -123,8 +154,8 @@ export default class GuildSettings extends Settings {
     }
 
     /**
-     * @param {String} id
-     * @return {Promise<GuildSettings>}
+     * @param {string} id
+     * @returns {Promise<GuildSettings>}
      */
     static async get(id) {
         return super.get(id);
@@ -149,13 +180,13 @@ export default class GuildSettings extends Settings {
      * @returns {string}
      */
     getModerationSettings() {
-        const protectedRoles = this.getProtectedRoles().map(role => '- ' + roleMention(role)).join('\n') || 'None';
+        const protectedRoles = Array.from(this.protectedRoles).map(role => '- ' + roleMention(role)).join('\n') || 'None';
 
         return `Log: ${this.logChannel ? channelMention(this.logChannel) : 'disabled'}\n` +
             `Message Log: ${this.messageLogChannel ? channelMention(this.messageLogChannel) : 'disabled'}\n` +
             `Join Log: ${this.joinLogChannel ? channelMention(this.joinLogChannel) : 'disabled'}\n` +
             `Muted role: ${this.mutedRole ? roleMention(this.mutedRole) : 'disabled'}\n` +
-            `Protected roles: ${this.getProtectedRoles().length ? '\n' : ''}${protectedRoles}\n`;
+            `Protected roles: ${this.protectedRoles.size ? '\n' : ''}${protectedRoles}\n`;
     }
 
     /**
@@ -170,7 +201,7 @@ export default class GuildSettings extends Settings {
 
     /**
      * generate an overview of automod settings
-     * @returns {String}
+     * @returns {string}
      */
     getAutomodSettings() {
         const lines = [
@@ -184,7 +215,7 @@ export default class GuildSettings extends Settings {
 
         if (this.isFeatureWhitelisted) {
             if (this.safeSearch.enabled) {
-                lines.push(`Safe search: enabled (${this.safeSearch.strikes} strikes)`);
+                lines.push(`Safe search: enabled for images ${this.displayLikelihood()} nsfw content (${this.safeSearch.strikes} strikes)`);
             }
             else {
                 lines.push('Safe search: disabled');
@@ -194,72 +225,43 @@ export default class GuildSettings extends Settings {
         return lines.join('\n');
     }
 
+    displayLikelihood() {
+        switch (this.safeSearch.likelihood) {
+            case 0:
+                return `${bold('possibly')} containing`;
+            case 1:
+                return `${bold('likely')} to contain`;
+            case 2:
+                return `${bold('very likely')} to contain`;
+        }
+    }
+
     /**
      * is this guild in the feature whitelist
-     * @return {boolean}
+     * @returns {boolean}
      */
     get isFeatureWhitelisted() {
         return config.data.featureWhitelist.includes(this.id);
     }
 
     /**
-     * Is this a protected role?
-     * @param  {import('discord.js').Snowflake} role role id
-     * @return {Boolean}
-     */
-    isProtectedRole(role) {
-        return this.#protectedRoles.includes(role);
-    }
-
-    /**
      * Is this member protected?
      * @async
      * @param {import('discord.js').GuildMember} member member object of the user in the specific guild
-     * @return {Boolean}
+     * @returns {boolean}
      */
     isProtected(member) {
         for (let [key] of member.roles.cache) {
-            if (this.isProtectedRole(key))
+            if (this.protectedRoles.has(key))
                 return true;
         }
         return false;
     }
 
     /**
-     * Add this role to the protected roles
-     * @param  {import('discord.js').Snowflake} role role id
-     */
-    addProtectedRole(role) {
-        if (!this.isProtectedRole(role)) {
-            this.#protectedRoles.push(role);
-        }
-    }
-
-    /**
-     * Remove this role from the protected roles
-     * @param  {import('discord.js').Snowflake} role role id
-     */
-    removeProtectedRole(role) {
-        let newRoles = [];
-        for (let protectedRole of this.#protectedRoles) {
-            if (protectedRole !== role)
-                newRoles.push(role);
-        }
-        this.#protectedRoles = newRoles;
-    }
-
-    /**
-     * get all protected roles
-     * @return {import('discord.js').Snowflake[]}
-     */
-    getProtectedRoles() {
-        return this.#protectedRoles;
-    }
-
-    /**
      * get a specific punishment
-     * @param {Number} strikes
-     * @return {?Punishment}
+     * @param {number} strikes
+     * @returns {?Punishment}
      */
     getPunishment(strikes) {
         if (!this.#punishments[strikes]) {
@@ -271,8 +273,8 @@ export default class GuildSettings extends Settings {
 
     /**
      * find the last punishment
-     * @param {Number} strikes
-     * @return {Punishment}
+     * @param {number} strikes
+     * @returns {Punishment}
      */
     findPunishment(strikes) {
         let punishment;
@@ -285,9 +287,9 @@ export default class GuildSettings extends Settings {
 
     /**
      * set a punishment
-     * @param {Number} strikes
+     * @param {number} strikes
      * @param {?Punishment} punishment
-     * @return {Promise<>}
+     * @returns {Promise<void>}
      */
     setPunishment(strikes, punishment) {
         if (punishment === null)
@@ -299,7 +301,7 @@ export default class GuildSettings extends Settings {
 
     /**
      * get all punishments
-     * @return {Collection<Number, Punishment>}
+     * @returns {Collection<number, Punishment>}
      */
     getPunishments() {
         const punishments = new Collection();
@@ -313,7 +315,7 @@ export default class GuildSettings extends Settings {
 
     /**
      * get the zendesk instance for this guild
-     * @return {Zendesk}
+     * @returns {Zendesk}
      */
     getZendesk() {
         if (!this.helpcenter) {
@@ -325,7 +327,7 @@ export default class GuildSettings extends Settings {
 
     /**
      * get the YouTube playlist for this guild
-     * @return {YouTubePlaylist}
+     * @returns {YouTubePlaylist}
      */
     getPlaylist() {
         if (!this.playlist) {
@@ -335,6 +337,13 @@ export default class GuildSettings extends Settings {
         return new YouTubePlaylist(this.playlist);
     }
 
+    /**
+     * @returns {null|import('discord.js').Snowflake}
+     */
+    getMutedRole() {
+        return this.mutedRole ?? null;
+    }
+
     getDataObject(o = this) {
         //copy to new object
         const cleanObject = {};
@@ -342,7 +351,9 @@ export default class GuildSettings extends Settings {
 
         //copy private properties
         cleanObject.punishments = this.#punishments;
-        cleanObject.protectedRoles = this.#protectedRoles;
+
+        //convert set to array
+        cleanObject.protectedRoles = Array.from(this.protectedRoles);
 
         return super.getDataObject(cleanObject);
     }

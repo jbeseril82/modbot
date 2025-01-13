@@ -15,7 +15,7 @@ export default class HelpCenterCommand extends SubCommand {
     buildOptions(builder) {
         builder.addStringOption(option => option
             .setName('domain')
-            .setDescription('Zendesk help-center domain (e.g. \'aternos.zendesk.com\' or \'support.aternos.org\').')
+            .setDescription('Zendesk help center domain (e.g. \'aternos.zendesk.com\' or \'support.aternos.org\').')
             .setRequired(false)
         );
         return super.buildOptions(builder);
@@ -30,7 +30,7 @@ export default class HelpCenterCommand extends SubCommand {
             await guildSettings.save();
             await commandManager.updateCommandsForGuild(interaction.guild);
             return await interaction.reply(new EmbedWrapper()
-                .setDescription('Disabled help-center')
+                .setDescription('Disabled help center')
                 .setColor(colors.RED)
                 .toMessage()
             );
@@ -42,7 +42,7 @@ export default class HelpCenterCommand extends SubCommand {
 
         const name = await this.findHelpCenterName(domain);
         if (!name) {
-            return await interaction.reply(ErrorEmbed.message('Only Zendesk help-centers are supported. ' +
+            return await interaction.reply(ErrorEmbed.message('Only Zendesk help centers are supported. ' +
                 `You must have a CNAME on your domain or use the ${inlineCode('.zendesk.com')} domain.`)
             );
         }
@@ -52,7 +52,7 @@ export default class HelpCenterCommand extends SubCommand {
             await request.getJSON();
         } catch (e) {
             if (e.response?.statusCode === 404 || e.code === 'ENOTFOUND') {
-                return await interaction.reply(ErrorEmbed.message('This Zendesk help-center does not exist.'));
+                return await interaction.reply(ErrorEmbed.message('This Zendesk help center does not exist.'));
             } else {
                 throw e;
             }
@@ -62,7 +62,7 @@ export default class HelpCenterCommand extends SubCommand {
         await guildSettings.save();
         await commandManager.updateCommandsForGuild(interaction.guild);
         await interaction.reply(new EmbedWrapper()
-            .setDescription(`Set help-center to https://${name}.zendesk.com/hc/`)
+            .setDescription(`Set help center to https://${name}.zendesk.com/hc/`)
             .setColor(colors.GREEN)
             .toMessage()
         );
@@ -70,7 +70,7 @@ export default class HelpCenterCommand extends SubCommand {
 
     /**
      * @param {string} domain
-     * @return {?string}
+     * @returns {?string}
      */
     findDomain(domain) {
         const match = domain.match(/^(?:https?:\/\/)?([\w.]+)(?:[/?].*)?$/i);
@@ -82,9 +82,9 @@ export default class HelpCenterCommand extends SubCommand {
     }
 
     /**
-     * resolve the zendesk help-center name
+     * resolve the zendesk help center name
      * @param {string} domain
-     * @return {Promise<?string>}
+     * @returns {Promise<?string>}
      */
     async findHelpCenterName(domain) {
         if (domain.includes('.') && !ZENDESK_REGEX.test(domain)) {
@@ -104,22 +104,22 @@ export default class HelpCenterCommand extends SubCommand {
     }
 
     /**
-     * find a CNAME record pointing to a zendesk help-center
+     * find a CNAME record pointing to a zendesk help center
      * @param {string} domain
-     * @return {Promise<?string>}
+     * @returns {Promise<?string>}
      */
     async resolveCNAME(domain) {
         try {
             const result = await resolveCname(domain);
             return result.find(entry => entry.endsWith('.zendesk.com')) ?? null;
         }
-        catch (e) {
+        catch {
             return null;
         }
     }
 
     getDescription() {
-        return 'Configure the Zendesk help-center used for the article command';
+        return 'Configure the Zendesk help center used for the article command';
     }
 
     getName() {

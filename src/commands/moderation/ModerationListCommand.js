@@ -9,6 +9,10 @@ import icons from '../../util/icons.js';
 import MemberWrapper from '../../discord/MemberWrapper.js';
 
 /**
+ * @import EmbedWrapper from '../../embeds/EmbedWrapper.js';
+ */
+
+/**
  * number of moderations that will be displayed on a single page
  * keep embed length limitations in mind when changing this number!
  * @type {number}
@@ -29,7 +33,7 @@ export default class ModerationListCommand extends SubCommand {
         const user = interaction.options.getUser('user', true);
         const moderations = await Moderation.getAll(interaction.guildId, user.id);
 
-        await interaction.reply(await this.generateMessage(user, moderations));
+        await interaction.reply(await this.generateMessage(new MemberWrapper(user, interaction.guild), moderations));
     }
 
     async executeButton(interaction) {
@@ -41,7 +45,7 @@ export default class ModerationListCommand extends SubCommand {
 
         let page = interaction.customId.split(':')[3] ?? null;
         if (page === null) {
-            await interaction.reply(await this.generateMessage(member.user, moderations));
+            await interaction.reply(await this.generateMessage(member, moderations));
             return;
         }
 
@@ -52,16 +56,16 @@ export default class ModerationListCommand extends SubCommand {
         } else {
             page = parseInt(page);
         }
-        await interaction.update(await this.generateMessage(member.user, moderations, page));
+        await interaction.update(await this.generateMessage(member, moderations, page));
     }
 
     /**
-     * @param {import('discord.js').User} user
+     * @param {MemberWrapper} member
      * @param {Moderation[]} moderations
      * @param {number} page
-     * @return {Promise<{ephemeral: boolean, embeds: EmbedWrapper[]}>}
+     * @returns {Promise<{ephemeral: boolean, embeds: EmbedWrapper[]}>}
      */
-    async generateMessage(user, moderations, page = 1) {
+    async generateMessage(member, moderations, page = 1) {
         const lastPage = Math.ceil(moderations.length / MODERATIONS_PER_PAGE);
         if (page < 1) {
             page = 1;
@@ -71,11 +75,11 @@ export default class ModerationListCommand extends SubCommand {
         }
 
         if (!moderations.length) {
-            return new ModerationListEmbed(user)
+            return new ModerationListEmbed(await member.getMemberOrUser())
                 .setDescription('This user has no moderations.')
                 .toMessage();
         }
-        const embed = new ModerationListEmbed(user);
+        const embed = new ModerationListEmbed(await member.getMemberOrUser());
 
         const start = (page - 1) * MODERATIONS_PER_PAGE;
         const end = Math.min(page * MODERATIONS_PER_PAGE, moderations.length);
@@ -99,9 +103,9 @@ export default class ModerationListCommand extends SubCommand {
             }
 
             const limit = Math.min(
-                EMBED_TOTAL_LIMIT / MODERATIONS_PER_PAGE - lines.join('\n').length,
+                EMBED_TOTAL_LIMIT / MODERATIONS_PER_PAGE,
                 EMBED_FIELD_LIMIT
-            );
+            ) - lines.join('\n').length;
             const reason = moderation.reason.length < limit ? moderation.reason
                 : moderation.reason.slice(0, limit - 3) + '...';
             lines.push(`Reason: ${reason}`);
@@ -115,11 +119,11 @@ export default class ModerationListCommand extends SubCommand {
         /** @type {ActionRowBuilder<ButtonBuilder>} */
         const actionRow = new ActionRowBuilder();
         for (const data of [
-            { id: `moderation:list:${user.id}:first`, emoji: 'firstPage', label: icons.first, disabled: page === 1 },
-            { id: `moderation:list:${user.id}:${page - 1}`, emoji: 'previousPage', label: icons.left, disabled: page === 1 },
-            { id: `moderation:list:${user.id}:${page}`, emoji: 'refresh', label: icons.refresh },
-            { id: `moderation:list:${user.id}:${page + 1}`, emoji: 'nextPage', label: icons.right, disabled: page === lastPage },
-            { id: `moderation:list:${user.id}:last`, emoji: 'lastPage', label: icons.last, disabled: page === lastPage },
+            { id: `moderation:list:${member.user.id}:first`, emoji: 'firstPage', label: icons.first, disabled: page === 1 },
+            { id: `moderation:list:${member.user.id}:${page - 1}`, emoji: 'previousPage', label: icons.left, disabled: page === 1 },
+            { id: `moderation:list:${member.user.id}:${page}`, emoji: 'refresh', label: icons.refresh },
+            { id: `moderation:list:${member.user.id}:${page + 1}`, emoji: 'nextPage', label: icons.right, disabled: page === lastPage },
+            { id: `moderation:list:${member.user.id}:last`, emoji: 'lastPage', label: icons.last, disabled: page === lastPage },
         ]) {
             const button = new ButtonBuilder()
                 .setCustomId(data.id)

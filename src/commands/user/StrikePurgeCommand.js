@@ -1,9 +1,8 @@
 import StrikeCommand from './StrikeCommand.js';
 import {
-    ActionRowBuilder,
     ModalBuilder,
     PermissionFlagsBits,
-    TextInputBuilder, TextInputStyle
+    TextInputStyle
 } from 'discord.js';
 import MemberWrapper from '../../discord/MemberWrapper.js';
 import Confirmation from '../../database/Confirmation.js';
@@ -12,6 +11,19 @@ import ChannelWrapper from '../../discord/ChannelWrapper.js';
 import GuildWrapper from '../../discord/GuildWrapper.js';
 import PurgeLogEmbed from '../../embeds/PurgeLogEmbed.js';
 import {deferReplyOnce} from '../../util/interaction.js';
+import ReasonInput from '../../modals/inputs/ReasonInput.js';
+import CommentInput from '../../modals/inputs/CommentInput.js';
+import CountInput from '../../modals/inputs/CountInput.js';
+import TextInput from '../../modals/inputs/TextInput.js';
+
+/**
+ * @import {StrikeConfirmationData} from './StrikeCommand.js';
+ */
+
+/**
+ * @typedef {StrikeConfirmationData} StrikePurgeConfirmationData
+ * @property {number} limit
+ */
 
 export default class StrikePurgeCommand extends StrikeCommand {
     buildOptions(builder) {
@@ -43,6 +55,7 @@ export default class StrikePurgeCommand extends StrikeCommand {
         await this.strikePurge(interaction,
             new MemberWrapper(interaction.options.getUser('user', true), interaction.guild),
             interaction.options.getString('reason'),
+            interaction.options.getString('comment'),
             interaction.options.getInteger('count'),
             interaction.options.getInteger('limit'),
         );
@@ -53,11 +66,12 @@ export default class StrikePurgeCommand extends StrikeCommand {
      * @param {import('discord.js').Interaction} interaction
      * @param {?MemberWrapper} member
      * @param {?string} reason
+     * @param {?string} comment
      * @param {?number} count
      * @param {?number} limit
-     * @return {Promise<void>}
+     * @returns {Promise<void>}
      */
-    async strikePurge(interaction, member, reason, count, limit) {
+    async strikePurge(interaction, member, reason, comment, count, limit) {
         await deferReplyOnce(interaction);
         reason = reason || 'No reason provided';
 
@@ -71,10 +85,10 @@ export default class StrikePurgeCommand extends StrikeCommand {
         }
 
         if (!await this.checkPermissions(interaction, member) ||
-            !await this.preventDuplicateModeration(interaction, member, {reason, count, limit})) {
+            !await this.preventDuplicateModeration(interaction, member, {reason, comment, count, limit})) {
             return;
         }
-        await super.strike(interaction, member, reason, count);
+        await super.strike(interaction, member, reason, comment, count);
 
 
         const channel = new ChannelWrapper(/** @type {import('discord.js').GuildChannel}*/ interaction.channel);
@@ -97,7 +111,7 @@ export default class StrikePurgeCommand extends StrikeCommand {
     async executeButton(interaction) {
         const parts = interaction.customId.split(':');
         if (parts[1] === 'confirm') {
-            /** @type {Confirmation<{reason: ?string, count: number, user: import('discord.js').Snowflake, limit: number}>}*/
+            /** @type {Confirmation<StrikePurgeConfirmationData>}*/
             const data = await Confirmation.get(parts[2]);
             if (!data) {
                 await interaction.update({content: 'This confirmation has expired.', embeds: [], components: []});
@@ -108,6 +122,7 @@ export default class StrikePurgeCommand extends StrikeCommand {
                 interaction,
                 await MemberWrapper.getMember(interaction, data.data.user),
                 data.data.reason,
+                data.data.comment,
                 data.data.count,
                 data.data.limit,
             );
@@ -121,7 +136,7 @@ export default class StrikePurgeCommand extends StrikeCommand {
      * prompt user for strike reason, count and message test limit
      * @param {import('discord.js').Interaction} interaction
      * @param {?MemberWrapper} member
-     * @return {Promise<void>}
+     * @returns {Promise<void>}
      */
     async promptForData(interaction, member) {
         if (!member) {
@@ -129,48 +144,38 @@ export default class StrikePurgeCommand extends StrikeCommand {
         }
 
         await interaction.showModal(new ModalBuilder()
-            .setTitle(`Strike-purge ${member.user.tag}`.substring(0, MODAL_TITLE_LIMIT))
+            .setTitle(`Strike-purge ${await member.displayName()}`.substring(0, MODAL_TITLE_LIMIT))
             .setCustomId(`strike-purge:${member.user.id}`)
             .addComponents(
-                /** @type {*} */
-                new ActionRowBuilder()
-                    .addComponents(/** @type {*} */ new TextInputBuilder()
-                        .setRequired(false)
-                        .setLabel('Reason')
-                        .setCustomId('reason')
-                        .setStyle(TextInputStyle.Paragraph)
-                        .setPlaceholder('No reason provided')),
-                /** @type {*} */
-                new ActionRowBuilder()
-                    .addComponents(/** @type {*} */ new TextInputBuilder()
-                        .setRequired(false)
-                        .setLabel('Count')
-                        .setCustomId('count')
-                        .setStyle(TextInputStyle.Short)
-                        .setPlaceholder('1')),
-                /** @type {*} */
-                new ActionRowBuilder()
-                    .addComponents(/** @type {*} */ new TextInputBuilder()
-                        .setRequired(false)
-                        .setLabel('Message deletion limit')
-                        .setCustomId('limit')
-                        .setStyle(TextInputStyle.Short)
-                        .setPlaceholder('100')),
+                new ReasonInput().toActionRow(),
+                new CommentInput().toActionRow(),
+                new CountInput().toActionRow(),
+                new TextInput().setRequired(false)
+                    .setLabel('Message deletion limit')
+                    .setCustomId('limit')
+                    .setStyle(TextInputStyle.Short)
+                    .setPlaceholder('100')
+                    .toActionRow(),
             ));
     }
 
     async executeModal(interaction) {
-        let reason, count, limit;
+        let reason, comment, count, limit;
         for (const row of interaction.components) {
             for (const component of row.components) {
-                if (component.customId === 'reason') {
-                    reason = component.value || 'No reason provided';
-                }
-                else if (component.customId === 'count') {
-                    count = parseInt(component.value);
-                }
-                else if (component.customId === 'limit') {
-                    limit = parseInt(component.value);
+                switch (component.customId) {
+                    case 'reason':
+                        reason = component.value || 'No reason provided';
+                        break;
+                    case 'comment':
+                        comment = component.value || null;
+                        break;
+                    case 'count':
+                        count = parseInt(component.value);
+                        break;
+                    case 'limit':
+                        limit = parseInt(component.value);
+                        break;
                 }
             }
         }
@@ -179,6 +184,7 @@ export default class StrikePurgeCommand extends StrikeCommand {
             interaction,
             await MemberWrapper.getMemberFromCustomId(interaction),
             reason,
+            comment,
             count,
             limit
         );

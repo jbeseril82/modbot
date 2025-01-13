@@ -1,5 +1,6 @@
 import config from './Config.js';
 import {Logging} from '@google-cloud/logging';
+import bot from './Bot.js';
 
 export class Logger {
     #cloudLog;
@@ -16,7 +17,7 @@ export class Logger {
     }
 
     /**
-     * @param {String|Object} message
+     * @param {string | object} message
      * @param {Error} [error]
      * @returns {Promise}
      */
@@ -25,7 +26,7 @@ export class Logger {
     }
 
     /**
-     * @param {String|Object} message
+     * @param {string | object} message
      * @param {Error} [error]
      * @returns {Promise}
      */
@@ -34,7 +35,7 @@ export class Logger {
     }
 
     /**
-     * @param {String|Object} message
+     * @param {string | object} message
      * @param {Error} [error]
      * @returns {Promise}
      */
@@ -43,7 +44,7 @@ export class Logger {
     }
 
     /**
-     * @param {String|Object} message
+     * @param {string | object} message
      * @param {Error} [error]
      * @returns {Promise}
      */
@@ -52,7 +53,7 @@ export class Logger {
     }
 
     /**
-     * @param {String|Object} message
+     * @param {string | object} message
      * @param {Error} [error]
      * @returns {Promise}
      */
@@ -61,7 +62,7 @@ export class Logger {
     }
 
     /**
-     * @param {String|Object} message
+     * @param {string | object} message
      * @param {Error} [error]
      * @returns {Promise}
      */
@@ -70,9 +71,14 @@ export class Logger {
     }
 
     /**
+     * @callback logFunction
+     * @param {string | object} message
+     */
+
+    /**
      * @param {string} severity
-     * @param {function(string|object)} logFunction
-     * @param {String|Object} message
+     * @param {logFunction} logFunction
+     * @param {string | object} message
      * @param {Error} [error]
      * @returns {Promise}
      */
@@ -90,20 +96,21 @@ export class Logger {
             return Promise.resolve();
         }
 
+        /**
+         * @type {import('@google-cloud/logging').LogEntry}
+         */
         const metadata = {
             resource: {
-                type: 'global'
+                type: 'global',
+                labels: {
+                    project_id: this.config.projectId,
+                    shard_id: bot.client.shard?.ids[0],
+                }
             },
             severity
         };
 
-        message = this.getData(message);
-
-        if (typeof message !== 'string') {
-            JSON.stringify(message);
-        }
-
-        return this.cloudLog.write(this.cloudLog.entry(metadata, message));
+        return this.cloudLog.write(this.cloudLog.entry(metadata, this.getData(message)));
     }
     
     getData(object) {

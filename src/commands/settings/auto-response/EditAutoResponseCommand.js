@@ -1,12 +1,20 @@
 import CompletingAutoResponseCommand from './CompletingAutoResponseCommand.js';
 import Confirmation from '../../../database/Confirmation.js';
 import {timeAfter} from '../../../util/timeutils.js';
-import {ActionRowBuilder, ModalBuilder, TextInputBuilder, TextInputStyle} from 'discord.js';
+import {
+    ActionRowBuilder,
+    channelMention,
+    ChannelSelectMenuBuilder,
+    ChannelType,
+    ModalBuilder,
+    TextInputBuilder,
+    TextInputStyle
+} from 'discord.js';
 import AutoResponse from '../../../database/AutoResponse.js';
 import ErrorEmbed from '../../../embeds/ErrorEmbed.js';
-import ChannelWrapper from '../../../discord/ChannelWrapper.js';
-import {channelSelectMenu} from '../../../util/channels.js';
 import colors from '../../../util/colors.js';
+import {SELECT_MENU_OPTIONS_LIMIT} from '../../../util/apiLimits.js';
+import config from '../../../bot/Config.js';
 
 export default class EditAutoResponseCommand extends CompletingAutoResponseCommand {
 
@@ -41,6 +49,14 @@ export default class EditAutoResponseCommand extends CompletingAutoResponseComma
             .setName('global')
             .setDescription('Use auto-response in all channels')
             .setRequired(false));
+
+        if (config.data.googleCloud.vision.enabled) {
+            builder.addBooleanOption(option => option
+                .setName('image-detection')
+                .setDescription('Respond to images containing text that matches the trigger')
+                .setRequired(false));
+        }
+
         return super.buildOptions(builder);
     }
 
@@ -53,15 +69,16 @@ export default class EditAutoResponseCommand extends CompletingAutoResponseComma
             return;
         }
 
-        const global = interaction.options.getBoolean('global');
-        const type = interaction.options.getString('type');
-        await this.showModal(interaction, autoResponse, global, type);
+        const global = interaction.options.getBoolean('global'),
+            type = interaction.options.getString('type'),
+            vision = interaction.options.getBoolean('image-detection');
+        await this.showModal(interaction, autoResponse, global, type, vision);
     }
 
     async executeButton(interaction) {
         const parts = interaction.customId.split(':');
         const autoResponse = /** @type {?AutoResponse} */
-            await AutoResponse.getByID(parts[3], interaction.guildId);
+            await AutoResponse.getByID(parts[2], interaction.guildId);
 
         if (!autoResponse) {
             await interaction.update({
@@ -71,14 +88,29 @@ export default class EditAutoResponseCommand extends CompletingAutoResponseComma
             return;
         }
 
-        await this.showModal(interaction, autoResponse, null, null);
+        await this.showModal(interaction, autoResponse, null, null, null);
     }
 
-    async showModal(interaction, autoResponse, global, type) {
+    /**
+     *
+     * @param {import('discord.js').Interaction} interaction
+     * @param {AutoResponse} autoResponse
+     * @param {?boolean} global
+     * @param {?string} type
+     * @param {?boolean} vision
+     * @returns {Promise<void>}
+     */
+    async showModal(interaction, autoResponse, global, type, vision) {
         global ??= autoResponse.global;
         type ??= autoResponse.trigger.type;
+        vision ??= autoResponse.enableVision;
 
-        const confirmation = new Confirmation({global, type, id: autoResponse.id}, timeAfter('1 hour'));
+        let trigger = autoResponse.trigger;
+        if (type === 'regex') {
+            trigger = trigger.toRegex();
+        }
+
+        const confirmation = new Confirmation({global, type, id: autoResponse.id, vision}, timeAfter('1 hour'));
         await interaction.showModal(new ModalBuilder()
             .setTitle(`Edit Auto-response #${autoResponse.id}`)
             .setCustomId(`auto-response:edit:${await confirmation.save()}`)
@@ -93,7 +125,7 @@ export default class EditAutoResponseCommand extends CompletingAutoResponseComma
                             .setStyle(TextInputStyle.Short)
                             .setPlaceholder(AutoResponse.getTriggerPlaceholder(type))
                             .setLabel('Trigger')
-                            .setValue(autoResponse.trigger.asContentString()),
+                            .setValue(trigger.asContentString()),
                     ),
                 /** @type {*} */
                 new ActionRowBuilder()
@@ -147,30 +179,30 @@ export default class EditAutoResponseCommand extends CompletingAutoResponseComma
                 [],
                 confirmation.data.type,
                 trigger,
-                response
+                response,
+                confirmation.data.vision,
             );
-        }
-        else {
+        } else {
             confirmation.data.trigger = trigger;
             confirmation.data.response = response;
             confirmation.expires = timeAfter('30 min');
-            const channels = (await interaction.guild.channels.fetch())
-                .map(channel => new ChannelWrapper(channel));
 
             await interaction.reply({
                 ephemeral: true,
-                content: 'Select channels for the auto-response',
+                content: `Select channels for the auto-response. Currently selected channels: ${
+                    autoResponse.channels.map(c => channelMention(c)).join(', ')}`,
                 components: [
                     /** @type {ActionRowBuilder} */
-                    new ActionRowBuilder().addComponents(/** @type {*} */
-                        channelSelectMenu(channels, autoResponse.channels)
-                            .setCustomId('noop')
-                            .setDisabled(true)
-                    ),
-                    /** @type {ActionRowBuilder} */
-                    new ActionRowBuilder().addComponents(/** @type {*} */
-                        channelSelectMenu(channels)
-                            .setCustomId(`auto-response:edit:${await confirmation.save()}`)
+                    new ActionRowBuilder().addComponents(/** @type {*} */new ChannelSelectMenuBuilder()
+                        .addChannelTypes(/** @type {*} */[
+                            ChannelType.GuildText,
+                            ChannelType.GuildForum,
+                            ChannelType.GuildAnnouncement,
+                            ChannelType.GuildStageVoice,
+                        ])
+                        .setMinValues(1)
+                        .setMaxValues(SELECT_MENU_OPTIONS_LIMIT)
+                        .setCustomId(`auto-response:edit:${await confirmation.save()}`)
                     )
                 ]
             });
@@ -194,6 +226,7 @@ export default class EditAutoResponseCommand extends CompletingAutoResponseComma
             confirmation.data.type,
             confirmation.data.trigger,
             confirmation.data.response,
+            confirmation.data.vision,
         );
     }
 
@@ -206,9 +239,19 @@ export default class EditAutoResponseCommand extends CompletingAutoResponseComma
      * @param {string} type
      * @param {string} trigger
      * @param {string} response
-     * @return {Promise<*>}
+     * @param {?boolean} vision
+     * @returns {Promise<*>}
      */
-    async update(interaction, id, global, channels, type, trigger, response) {
+    async update(
+        interaction,
+        id,
+        global,
+        channels,
+        type,
+        trigger,
+        response,
+        vision,
+    ) {
         const autoResponse =
             /** @type {?AutoResponse} */
             await AutoResponse.getByID(id, interaction.guildId);
@@ -220,6 +263,7 @@ export default class EditAutoResponseCommand extends CompletingAutoResponseComma
 
         autoResponse.global = global;
         autoResponse.channels = channels;
+        autoResponse.enableVision = vision;
         const triggerResponse = AutoResponse.getTrigger(type, trigger);
         if (!triggerResponse.success) {
             return interaction.reply(ErrorEmbed.message(triggerResponse.message));

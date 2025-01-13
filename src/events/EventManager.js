@@ -1,10 +1,14 @@
 import logger from '../bot/Logger.js';
 
+/**
+ * @import {EventListener} from '../../events/EventListener.js';
+ */
+
 export default class EventManager {
 
     /**
      * @abstract
-     * @return {EventListener[]}
+     * @returns {EventListener[]}
      */
     getEventListeners() {
 
@@ -21,7 +25,7 @@ export default class EventManager {
     /**
      * @param {EventListener} eventListener
      * @param {*} args
-     * @return {Promise<void>}
+     * @returns {Promise<void>}
      */
     async notifyEventListener(eventListener, ...args) {
         try {
@@ -29,7 +33,7 @@ export default class EventManager {
         }
         catch (e) {
             try {
-                await logger.error(`Failed to execute event listener '${eventListener.constructor.name}'`, e);
+                await logger.error(`Failed to execute event listener '${eventListener.constructor.name}': ${e.name}`, e);
             }
             catch (e) {
                 console.error(e);

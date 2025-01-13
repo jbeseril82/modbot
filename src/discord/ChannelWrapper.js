@@ -23,6 +23,8 @@ export const CHANNEL_LOCK_PERMISSIONS = [
     PermissionFlagsBits.SendMessages,
     PermissionFlagsBits.AddReactions,
     PermissionFlagsBits.SendMessagesInThreads,
+    PermissionFlagsBits.CreatePublicThreads,
+    PermissionFlagsBits.CreatePrivateThreads,
 ];
 
 export default class ChannelWrapper {
@@ -31,6 +33,22 @@ export default class ChannelWrapper {
      */
     constructor(channel) {
         this.channel = channel;
+    }
+
+    /**
+     * @param {import("discord.js").Snowflake} id
+     * @returns {Promise<ChannelWrapper>}
+     */
+    static async fetch(id) {
+        try {
+            return new this(await bot.client.channels.fetch(id));
+        }
+        catch (e) {
+            if ([RESTJSONErrorCodes.UnknownChannel, RESTJSONErrorCodes.MissingAccess].includes(e.code)) {
+                return null;
+            }
+            throw e;
+        }
     }
 
     sendable() {
@@ -76,7 +94,7 @@ export default class ChannelWrapper {
 
     /**
      * get the emoji for this channel type
-     * @return {import('discord.js').APIMessageComponentEmoji}
+     * @returns {import('discord.js').APIMessageComponentEmoji}
      */
     getChannelEmoji() {
         const id = this.getChannelEmojiId();
@@ -84,7 +102,7 @@ export default class ChannelWrapper {
     }
 
     /**
-     * @return {import('discord.js').Snowflake|null}
+     * @returns {import('discord.js').Snowflake|null}
      */
     getChannelEmojiId() {
         const emojis = config.data.emoji;
@@ -116,7 +134,7 @@ export default class ChannelWrapper {
      * Fetch messages (even more than 100) from a channel
      * @param {number} count
      * @param {import('discord.js').Snowflake|null} before
-     * @return {Promise<Collection<import('discord.js').Snowflake, import('discord.js').Message>>} fetched messages
+     * @returns {Promise<Collection<import('discord.js').Snowflake, import('discord.js').Message>>} fetched messages
      */
     async getMessages(count = 100, before = null) {
         let messages = new Collection();
@@ -138,7 +156,7 @@ export default class ChannelWrapper {
     /**
      *
      * @param {import('discord.js').Snowflake[]} messages
-     * @return {Promise<void>}
+     * @returns {Promise<void>}
      */
     async bulkDelete(messages) {
         while (messages.length) {

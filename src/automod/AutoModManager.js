@@ -1,4 +1,4 @@
-import {Collection, PermissionFlagsBits, RESTJSONErrorCodes, ThreadChannel, userMention} from 'discord.js';
+import {bold, Collection, PermissionFlagsBits, RESTJSONErrorCodes, ThreadChannel, userMention} from 'discord.js';
 import GuildSettings from '../settings/GuildSettings.js';
 import bot from '../bot/Bot.js';
 import MemberWrapper from '../discord/MemberWrapper.js';
@@ -8,6 +8,8 @@ import ChannelSettings from '../settings/ChannelSettings.js';
 import {formatTime} from '../util/timeutils.js';
 import RepeatedMessage from './RepeatedMessage.js';
 import SafeSearch from './SafeSearch.js';
+import logger from '../bot/Logger.js';
+import cloudVision from '../apis/CloudVision.js';
 
 export class AutoModManager {
     #safeSearchCache;
@@ -47,7 +49,7 @@ export class AutoModManager {
     /**
      * run all checks on a message
      * @param {import('discord.js').Message} message
-     * @return {Promise<void>}
+     * @returns {Promise<void>}
      */
     async checkMessage(message) {
         await this.#runChecks(message, ...this.#CONTENT_CHECKS, ...this.#COOLDOWN_CHECKS);
@@ -56,7 +58,7 @@ export class AutoModManager {
     /**
      * run all content checks on a message, don't run any cooldown checks
      * @param {import('discord.js').Message} message
-     * @return {Promise<void>}
+     * @returns {Promise<void>}
      */
     async checkMessageEdit(message) {
         await this.#runChecks(message, ...this.#CONTENT_CHECKS);
@@ -66,7 +68,7 @@ export class AutoModManager {
      *
      * @param {import('discord.js').Message} message
      * @param {(message: import('discord.js').Message) => Promise<boolean>} checks
-     * @return {Promise<void>}
+     * @returns {Promise<void>}
      */
     async #runChecks(message, ...checks) {
         if (await this.#ignoredByAutomod(message)) {
@@ -91,7 +93,7 @@ export class AutoModManager {
 
     /**
      * @param {import('discord.js').Message} message
-     * @return {Promise<boolean>}
+     * @returns {Promise<boolean>}
      */
     async #ignoredByAutomod(message) {
         if (!message.guild || message.system || message.author.bot) {
@@ -106,10 +108,19 @@ export class AutoModManager {
      * @param {import('discord.js').Message} message
      * @param {?string} reason
      * @param {string} warning
-     * @return {Promise<true>}
+     * @returns {Promise<true>}
      */
     async #deleteAndWarn(message, reason, warning) {
-        await bot.delete(message, reason);
+        try {
+            await bot.delete(message, reason);
+        } catch (e) {
+            if (e.code !== RESTJSONErrorCodes.MissingPermissions) {
+                throw e;
+            }
+            const channel = /** @type {import('discord.js').GuildTextBasedChannel} */ message.channel;
+            await logger.warn(`Missing permissions to delete message in channel ${channel?.name} (${message.channelId}) of guild ${message.guild?.name} (${message.guildId})`, e);
+            return true;
+        }
         await this.#sendWarning(message, warning);
         return true;
     }
@@ -118,17 +129,23 @@ export class AutoModManager {
      * send a temporary warning message mentioning the user
      * @param {import('discord.js').Message} message
      * @param {string} warning
-     * @return {Promise<void>}
+     * @returns {Promise<void>}
      */
     async #sendWarning(message, warning) {
-        const response = await (/** @type {import('discord.js').TextBasedChannelFields} */ message.channel)
-            .send(userMention(message.author.id) + ' ' + warning);
-        await bot.delete(response, null, this.#RESPONSE_TIMEOUT);
+        try {
+            const response = await (/** @type {import('discord.js').TextBasedChannelFields} */ message.channel)
+                .send(userMention(message.author.id) + ' ' + warning);
+            await bot.delete(response, null, this.#RESPONSE_TIMEOUT);
+        } catch (e) {
+            if (e.code !== RESTJSONErrorCodes.MissingPermissions) {
+                throw e;
+            }
+        }
     }
 
     /**
      * @param {import('discord.js').Message} message
-     * @return {Promise<boolean>} has the message been deleted
+     * @returns {Promise<boolean>} has the message been deleted
      */
     async #safeSearchDetection(message) {
         if (!await this.#safeSearch.isEnabledInGuild(message.guild) || (/** @type {import('discord.js').TextBasedChannelFields} */ message.channel).nsfw) {
@@ -137,14 +154,14 @@ export class AutoModManager {
 
         const guildSettings = await GuildSettings.get(message.guild.id);
         const likelihood = await this.#safeSearch.detect(message);
-        if (!likelihood || likelihood.value < 0) {
+        if (!likelihood || likelihood.value < (guildSettings.safeSearch.likelihood ?? 1)) {
             return false;
         }
 
         await this.#deleteAndWarn(message, `Detected ${likelihood.type} image`, 'You can\'t post such images here!');
         if (likelihood.value === 2 && guildSettings.safeSearch.strikes) {
             const member = new MemberWrapper(message.author, message.guild);
-            await member.strike(`Posting images containing ${likelihood.type} content`, bot.client.user, guildSettings.safeSearch.strikes);
+            await member.strike(`Posting images containing ${likelihood.type} content`, null, bot.client.user, guildSettings.safeSearch.strikes);
         }
 
         return true;
@@ -152,7 +169,7 @@ export class AutoModManager {
 
     /**
      * @param {import('discord.js').Message} message
-     * @return {Promise<boolean>} has the message been deleted
+     * @returns {Promise<boolean>} has the message been deleted
      */
     async #badWords(message) {
         let channel = message.channel;
@@ -162,26 +179,60 @@ export class AutoModManager {
 
         const words = (/** @type {Collection<number, BadWord>} */ await BadWord.get(channel.id, message.guild.id))
             .sort((a, b) => b.priority - a.priority);
+
         for (let word of words.values()) {
-            if (word.matches(message)) {
-                const reason = `Using forbidden words or phrases (Filter ID: ${word.id})`;
-                await bot.delete(message, reason);
-                if (word.response !== 'disabled') {
-                    await this.#sendWarning(message, word.getResponse());
-                }
-                if (word.punishment.action !== 'none') {
-                    const member = new Member(message.author, message.guild);
-                    await member.executePunishment(word.punishment, reason);
-                }
+            if (word.matches(message.content)) {
+                await this.#deleteBadWordMessage(word, message);
                 return true;
             }
         }
+
+        if (!cloudVision.isEnabled || !(await GuildSettings.get(message.guild.id)).isFeatureWhitelisted) {
+            return false;
+        }
+
+        let texts = null;
+        for (let word of words.values()) {
+            if (word.enableVision && word.trigger.supportsImages()) {
+                texts ??= await cloudVision.getImageText(message);
+                for (const text of texts) {
+                    if (word.matches(text)) {
+                        await this.#deleteBadWordMessage(word, message);
+                        return true;
+                    }
+                }
+
+            }
+        }
+
         return false;
     }
 
     /**
+     * @param {BadWord} word
      * @param {import('discord.js').Message} message
-     * @return {Promise<boolean>} has the message been deleted
+     * @returns {Promise<void>}
+     */
+    async #deleteBadWordMessage(word, message) {
+        const reason = 'Using forbidden words or phrases';
+        const comment = `(Filter ID: ${word.id})`;
+        await bot.delete(message, reason + ' ' + comment);
+        if (word.response !== 'disabled') {
+            await this.#sendWarning(message, word.getResponse());
+        }
+
+        const member = new Member(message.author, message.guild);
+        if (word.punishment.action !== 'none') {
+            await member.executePunishment(word.punishment, reason, comment);
+        }
+        if (word.dm) {
+            await member.guild.sendDM(member.user, `Your message in ${bold(message.guild.name)} was removed: ` + word.dm);
+        }
+    }
+
+    /**
+     * @param {import('discord.js').Message} message
+     * @returns {Promise<boolean>} has the message been deleted
      */
     async #caps(message) {
         const guildSettings = await GuildSettings.get(message.guild.id);
@@ -201,7 +252,7 @@ export class AutoModManager {
 
     /**
      * @param {import('discord.js').Message} message
-     * @return {Promise<boolean>} has the message been deleted
+     * @returns {Promise<boolean>} has the message been deleted
      */
     async #invites(message) {
         if (!this.includesInvite(message.content)) {
@@ -226,7 +277,7 @@ export class AutoModManager {
 
     /**
      * @param {import('discord.js').Message} message
-     * @return {Promise<boolean>} has the message been deleted
+     * @returns {Promise<boolean>} has the message been deleted
      */
     async linkCoolDown(message) {
         if (!message.content.match(/https?:\/\//i)) {
@@ -252,7 +303,7 @@ export class AutoModManager {
 
     /**
      * @param {import('discord.js').Message} message
-     * @return {Promise<boolean>} has the message been deleted
+     * @returns {Promise<boolean>} has the message been deleted
      */
     async attachmentCoolDown(message) {
         if (!message.attachments.size) {
@@ -278,7 +329,7 @@ export class AutoModManager {
 
     /**
      * @param {import('discord.js').Message} message
-     * @return {Promise<boolean>}
+     * @returns {Promise<boolean>}
      */
     async spam(message) {
         const guildSettings = await GuildSettings.get(message.guild.id);

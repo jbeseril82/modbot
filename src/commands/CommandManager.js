@@ -1,10 +1,9 @@
 import bot from '../bot/Bot.js';
 import {
-    ApplicationCommandPermissionType,
     ApplicationCommandType,
     hyperlink,
-    PermissionFlagsBits,
-    RESTJSONErrorCodes
+    REST,
+    RESTJSONErrorCodes, Routes
 } from 'discord.js';
 import {AUTOCOMPLETE_OPTIONS_LIMIT} from '../util/apiLimits.js';
 import Cache from '../bot/Cache.js';
@@ -16,7 +15,6 @@ import ExportCommand from './bot/ExportCommand.js';
 import ImportCommand from './bot/ImportCommand.js';
 import InfoCommand, {GITHUB_REPOSITORY} from './bot/InfoCommand.js';
 import UserInfoCommand from './user/UserInfoCommand.js';
-import MemberWrapper from '../discord/MemberWrapper.js';
 import BanCommand from './user/BanCommand.js';
 import UnbanCommand from './user/UnbanCommand.js';
 import VideoCommand from './external/VideoCommand.js';
@@ -43,6 +41,13 @@ import BadWordCommand from './settings/BadWordCommand.js';
 import {replyOrFollowUp} from '../util/interaction.js';
 import logger from '../bot/Logger.js';
 import SafeSearchCommand from './settings/SafeSearchCommand.js';
+import SlashCommandPermissionManagers from '../discord/permissions/SlashCommandPermissionManagers.js';
+import config from '../bot/Config.js';
+
+/**
+ * @import {Command} from './Command.js';
+ * @import {ExecutableCommand} from './ExecutableCommand.js';
+ */
 
 const cooldowns = new Cache();
 
@@ -93,24 +98,38 @@ export class CommandManager {
     ];
 
     /**
-     * @return {Command[]}
+     * @returns {Command[]}
      */
     getCommands() {
         return this.#commands;
     }
 
     /**
-     * register all slash commands
-     * @return {Promise<void>}
+     * Register slash commands available in all guilds
+     * @returns {Promise<void>}
      */
-    async register() {
+    async registerGlobalCommands() {
         const globalCommands = this.#commands.filter(command => command.isAvailableInAllGuilds());
-        for (const [id, command] of await bot.client.application.commands.set(this.buildCommands(globalCommands))) {
+        const rest = new REST().setToken(config.data.authToken);
+        /** @type {{id: import('discord.js').Snowflake}} */
+        const application = await rest.get(Routes.currentApplication());
+        /** @type {{id: import('discord.js').Snowflake, name: string, type: number}[]} */
+        const data = await rest.put(
+            Routes.applicationCommands(application.id),
+            { body: this.buildCommands(globalCommands) },
+        );
+        for (const command of data) {
             if (command.type === ApplicationCommandType.ChatInput) {
-                this.findCommand(command.name).id = id;
+                this.findCommand(command.name).id = command.id;
             }
         }
+    }
 
+    /**
+     * Update which commands are available in which guilds
+     * @returns {Promise<void>}
+     */
+    async updateGuildCommands() {
         for (const guild of bot.client.guilds.cache.values()) {
             await this.updateCommandsForGuild(guild);
         }
@@ -135,7 +154,7 @@ export class CommandManager {
     /**
      *
      * @param {Command[]} commands
-     * @return {import('discord.js').ApplicationCommandDataResolvable[]}
+     * @returns {import('discord.js').ApplicationCommandDataResolvable[]}
      */
     buildCommands(commands) {
         const result = [];
@@ -154,7 +173,7 @@ export class CommandManager {
     /**
      * find a command with this name
      * @param {string} name
-     * @return {Command}
+     * @returns {Command}
      */
     findCommand(name) {
         return this.getCommands().find(c => c.getName() === name.toLowerCase()) ?? null;
@@ -164,7 +183,7 @@ export class CommandManager {
      * check if this command can be executed in this context
      * @param {?ExecutableCommand} command
      * @param {import('discord.js').Interaction} interaction
-     * @return {Promise<boolean>} is command executable
+     * @returns {Promise<boolean>} is command executable
      */
     async checkCommandAvailability(command, interaction) {
         if (!command) {
@@ -201,13 +220,13 @@ export class CommandManager {
     /**
      * @param {import('discord.js').Interaction} interaction
      * @param {Error|import('discord.js').DiscordAPIError} error
-     * @return {Promise<void>}
+     * @returns {Promise<void>}
      */
     async handleCommandError(interaction, error) {
         const name = [
-            interaction.commandName,
-            interaction.options.getSubcommandGroup(false),
-            interaction.options.getSubcommand(false)
+            interaction.commandName ?? interaction.customId,
+            interaction.options?.getSubcommandGroup(false),
+            interaction.options?.getSubcommand(false)
         ].filter(v => !!v).join(' ');
         await logger.error(`Failed to execute command '${name}': ${error.name}`, error);
         let message = 'An error occurred while executing this command. ';
@@ -221,7 +240,7 @@ export class CommandManager {
 
     /**
      * @param {import('discord.js').ChatInputCommandInteraction} interaction
-     * @return {Promise<void>}
+     * @returns {Promise<void>}
      */
     async execute(interaction) {
         const command = this.findCommand(interaction.commandName);
@@ -239,7 +258,7 @@ export class CommandManager {
 
     /**
      * @param {import('discord.js').AutocompleteInteraction} interaction
-     * @return {Promise<void>}
+     * @returns {Promise<void>}
      */
     async autocomplete(interaction) {
         const command = this.findCommand(interaction.commandName);
@@ -264,7 +283,7 @@ export class CommandManager {
 
     /**
      * @param {import('discord.js').UserContextMenuCommandInteraction} interaction
-     * @return {Promise<void>}
+     * @returns {Promise<void>}
      */
     async executeUserMenu(interaction) {
         const command = this.findCommand(interaction.commandName);
@@ -282,7 +301,7 @@ export class CommandManager {
 
     /**
      * @param {import('discord.js').MessageContextMenuCommandInteraction} interaction
-     * @return {Promise<void>}
+     * @returns {Promise<void>}
      */
     async executeMessageMenu(interaction) {
         const command = this.findCommand(interaction.commandName);
@@ -300,7 +319,7 @@ export class CommandManager {
 
     /**
      * @param {import('discord.js').ButtonInteraction} interaction
-     * @return {Promise<void>}
+     * @returns {Promise<void>}
      */
     async executeButton(interaction) {
         if (!interaction.customId) {
@@ -326,7 +345,7 @@ export class CommandManager {
 
     /**
      * @param {import('discord.js').ModalSubmitInteraction} interaction
-     * @return {Promise<void>}
+     * @returns {Promise<void>}
      */
     async executeModal(interaction) {
         const command = this.findCommandByCustomId(interaction.customId);
@@ -347,8 +366,8 @@ export class CommandManager {
     }
 
     /**
-     * @param {import('discord.js').SelectMenuInteraction} interaction
-     * @return {Promise<void>}
+     * @param {import('discord.js').AnySelectMenuInteraction} interaction
+     * @returns {Promise<void>}
      */
     async executeSelectMenu(interaction) {
         const command = this.findCommandByCustomId(interaction.customId);
@@ -370,7 +389,7 @@ export class CommandManager {
 
     /**
      * @param {?string} id
-     * @return {?Command}
+     * @returns {?Command}
      */
     findCommandByCustomId(id) {
         if (!id) {
@@ -383,7 +402,7 @@ export class CommandManager {
     /**
      * @param {import('discord.js').Interaction} interaction
      * @param {Command} command
-     * @return {Promise<boolean>}
+     * @returns {Promise<boolean>}
      */
     async checkMemberPermissions(interaction, command) {
         const permission = await this.hasPermission(interaction, command);
@@ -396,129 +415,12 @@ export class CommandManager {
     /**
      * @param {import('discord.js').Interaction} interaction
      * @param {Command} command
-     * @return {Promise<boolean>}
+     * @returns {Promise<boolean>}
      */
     async hasPermission(interaction, command) {
-        const member = await (new MemberWrapper(interaction.user, interaction.guild)).fetchMember();
-
-        if (interaction.memberPermissions.has(PermissionFlagsBits.Administrator)) {
-            return true;
-        }
-
-        if (!interaction.memberPermissions.has(PermissionFlagsBits.UseApplicationCommands)) {
-            return false;
-        }
-
-        // Check permissions for specific command if they exist
-        const commandPermissions = await this.fetchCommandOverrides(interaction.guild, command.id);
-        if (commandPermissions.length) {
-            return this.hasPermissionInOverrides(member, interaction.channel, commandPermissions);
-        }
-
-        // Fallback to global permissions if they exist
-        const globalPermissions = await this.fetchCommandOverrides(interaction.guild, bot.client.user.id);
-        if (globalPermissions.length) {
-            return this.hasPermissionInOverrides(member, interaction.channel, globalPermissions);
-        }
-
-        // Fallback to default permissions
-        switch (command.getDefaultMemberPermissions()) {
-            case null:
-                return true;
-            case 0:
-                return false;
-            default:
-                return interaction.memberPermissions.has(command.getDefaultMemberPermissions());
-        }
-    }
-
-    /**
-     *
-     * @param {import('discord.js').GuildMember} member
-     * @param {import('discord.js').GuildTextBasedChannel} channel
-     * @param {import('discord.js').ApplicationCommandPermissions[]} overrides
-     * @return {Promise<?boolean>}
-     */
-    async hasPermissionInOverrides(member, channel, overrides) {
-        let permission = null;
-        // https://discord.com/developers/docs/interactions/application-commands#application-command-permissions-object-application-command-permissions-constants
-        const everyoneRoleId = member.guild.id;
-        const allChannelsId = (BigInt(member.guild.id) - 1n).toString();
-
-        const everyoneOverride = overrides.find(override =>
-            override.type === ApplicationCommandPermissionType.Role
-            && override.id === everyoneRoleId
-        ) ?? null;
-
-        const roleOverrides = overrides.filter(override =>
-            override.type === ApplicationCommandPermissionType.Role
-            && override.id !== everyoneRoleId
-            && member.roles.resolve(override.id)
-        );
-
-        const memberOverride = overrides.find(override =>
-            override.type === ApplicationCommandPermissionType.User
-            && override.id === member.id
-        );
-
-        const globalChannelOverride = overrides.find(override =>
-            override.type === ApplicationCommandPermissionType.Channel
-            && override.id === allChannelsId
-        ) ?? null;
-
-        const channelOverride = overrides.find(override =>
-            override.type === ApplicationCommandPermissionType.Channel
-            && override.id === channel.id
-        ) ?? null;
-
-        // check channel permissions
-        if (channelOverride && !channelOverride.permission) {
-            return false;
-        }
-        if (!channelOverride && globalChannelOverride && !globalChannelOverride.permission) {
-            return false;
-        }
-
-        // Apply permissions for the default role (@everyone).
-        if (everyoneOverride) {
-            permission = everyoneOverride.permission;
-        }
-
-        // Apply denies for all additional roles the guild member has at once.
-        if (roleOverrides.some(override => !override.permission)) {
-            permission = false;
-        }
-
-        // Apply allows for all additional roles the guild member has at once.
-        if (roleOverrides.some(override => override.permission)) {
-            permission = true;
-        }
-
-        // Apply permissions for the specific guild member if they exist.
-        if (memberOverride) {
-            permission = memberOverride.permission;
-        }
-
-        return permission;
-    }
-
-    /**
-     *
-     * @param {import('discord.js').Guild} guild
-     * @param {import('discord.js').Snowflake} commandId
-     * @return {Promise<import('discord.js').ApplicationCommandPermissions[]>}
-     */
-    async fetchCommandOverrides(guild, commandId) {
-        try {
-            return await guild.commands.permissions.fetch({command: commandId});
-        }
-        catch (e) {
-            if (e.code === RESTJSONErrorCodes.UnknownApplicationCommandPermissions) {
-                return [];
-            } else {
-                throw e;
-            }
-        }
+        return SlashCommandPermissionManagers
+            .getManager(interaction)
+            .hasPermission(interaction, command);
     }
 }
 

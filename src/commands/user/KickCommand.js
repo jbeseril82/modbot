@@ -1,10 +1,7 @@
 import {
-    ActionRowBuilder,
     ModalBuilder,
     PermissionFlagsBits,
     PermissionsBitField,
-    TextInputBuilder,
-    TextInputStyle
 } from 'discord.js';
 import MemberWrapper from '../../discord/MemberWrapper.js';
 import colors from '../../util/colors.js';
@@ -14,24 +11,14 @@ import Confirmation from '../../database/Confirmation.js';
 import UserActionEmbed from '../../embeds/UserActionEmbed.js';
 import config from '../../bot/Config.js';
 import {deferReplyOnce, replyOrEdit} from '../../util/interaction.js';
+import ReasonInput from '../../modals/inputs/ReasonInput.js';
+import CommentInput from '../../modals/inputs/CommentInput.js';
+
+/**
+ * @import {ConfirmationData} from './UserCommand.js';
+ */
 
 export default class KickCommand extends UserCommand {
-
-    buildOptions(builder) {
-        builder.addUserOption(option =>
-            option
-                .setName('user')
-                .setDescription('The user you want to kick')
-                .setRequired(true)
-        );
-        builder.addStringOption(option =>
-            option.setName('reason')
-                .setDescription('Kick reason')
-                .setRequired(false)
-                .setAutocomplete(true)
-        );
-        return super.buildOptions(builder);
-    }
 
     getDefaultMemberPermissions() {
         return new PermissionsBitField()
@@ -51,6 +38,7 @@ export default class KickCommand extends UserCommand {
         await this.kick(interaction,
             new MemberWrapper(interaction.options.getUser('user', true), interaction.guild),
             interaction.options.getString('reason'),
+            interaction.options.getString('comment'),
         );
     }
 
@@ -59,18 +47,19 @@ export default class KickCommand extends UserCommand {
      * @param {import('discord.js').Interaction} interaction
      * @param {?MemberWrapper} member
      * @param {?string} reason
-     * @return {Promise<void>}
+     * @param {?string} comment
+     * @returns {Promise<void>}
      */
-    async kick(interaction, member, reason) {
+    async kick(interaction, member, reason, comment) {
         await deferReplyOnce(interaction);
         reason = reason || 'No reason provided';
 
         if (!await this.checkPermissions(interaction, member) ||
-            !await this.preventDuplicateModeration(interaction, member, {reason})) {
+            !await this.preventDuplicateModeration(interaction, member, {reason, comment})) {
             return;
         }
 
-        await member.kick(reason, interaction.user);
+        await member.kick(reason, comment, interaction.user);
         await replyOrEdit(interaction,
             new UserActionEmbed(member.user, reason, 'kicked', colors.ORANGE, config.data.emoji.kick)
                 .toMessage());
@@ -79,7 +68,7 @@ export default class KickCommand extends UserCommand {
     async executeButton(interaction) {
         const parts = interaction.customId.split(':');
         if (parts[1] === 'confirm') {
-            /** @type {Confirmation<{reason: ?string, user: import('discord.js').Snowflake}>}*/
+            /** @type {Confirmation<ConfirmationData>}*/
             const data = await Confirmation.get(parts[2]);
             if (!data) {
                 await interaction.update({content: 'This confirmation has expired.', embeds: [], components: []});
@@ -90,6 +79,7 @@ export default class KickCommand extends UserCommand {
                 interaction,
                 await MemberWrapper.getMember(interaction, data.data.user),
                 data.data.reason,
+                data.data.comment,
             );
             return;
         }
@@ -105,7 +95,7 @@ export default class KickCommand extends UserCommand {
     /**
      * @param {import('discord.js').Interaction} interaction
      * @param {?MemberWrapper} member
-     * @return {Promise<void>}
+     * @returns {Promise<void>}
      */
     async promptForData(interaction, member) {
         if (!member) {
@@ -113,25 +103,30 @@ export default class KickCommand extends UserCommand {
         }
 
         await interaction.showModal(new ModalBuilder()
-            .setTitle(`Kick ${member.user.tag}`.substring(0, MODAL_TITLE_LIMIT))
+            .setTitle(`Kick ${await member.displayName()}`.substring(0, MODAL_TITLE_LIMIT))
             .setCustomId(`kick:${member.user.id}`)
             .addComponents(
-                /** @type {*} */
-                new ActionRowBuilder()
-                    .addComponents(/** @type {*} */ new TextInputBuilder()
-                        .setRequired(false)
-                        .setLabel('Reason')
-                        .setCustomId('reason')
-                        .setStyle(TextInputStyle.Paragraph)
-                        .setPlaceholder('No reason provided')),
+                new ReasonInput().toActionRow(),
+                new CommentInput().toActionRow(),
             ));
     }
 
     async executeModal(interaction) {
-        const reason = interaction.components[0].components.find(component => component.customId === 'reason').value
-            || 'No reason provided';
+        let reason, comment;
+        for (const row of interaction.components) {
+            for (const component of row.components) {
+                switch (component.customId) {
+                    case 'reason':
+                        reason = component.value || 'No reason provided';
+                        break;
+                    case 'comment':
+                        comment = component.value || null;
+                        break;
+                }
+            }
+        }
 
-        await this.kick(interaction, await MemberWrapper.getMemberFromCustomId(interaction), reason);
+        await this.kick(interaction, await MemberWrapper.getMemberFromCustomId(interaction), reason, comment);
     }
 
     getDescription() {

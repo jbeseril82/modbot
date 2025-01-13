@@ -1,18 +1,18 @@
 import Command from '../Command.js';
 import {
     ActionRowBuilder,
-    ButtonBuilder,
     ButtonStyle, hyperlink,
     PermissionFlagsBits,
     PermissionsBitField
 } from 'discord.js';
 import bot from '../../bot/Bot.js';
-import config from '../../bot/Config.js';
 import KeyValueEmbed from '../../embeds/KeyValueEmbed.js';
 import {formatTime} from '../../util/timeutils.js';
 import {readFile} from 'fs/promises';
 import {exec} from 'child_process';
 import {promisify} from 'util';
+import {componentEmojiIfExists} from '../../util/format.js';
+import BetterButtonBuilder from '../../embeds/BetterButtonBuilder.js';
 
 export const DISCORD_INVITE_LINK = 'https://discord.gg/zYYhgPtmxw';
 export const GITHUB_REPOSITORY = 'https://github.com/aternosorg/modbot';
@@ -28,10 +28,14 @@ export const PERMISSIONS = new PermissionsBitField()
     .add(PermissionFlagsBits.BanMembers)
     .add(PermissionFlagsBits.ModerateMembers)
     .add(PermissionFlagsBits.ManageMessages)
-    .add(PermissionFlagsBits.SendMessages);
-export const INVITE_LINK = `https://discordapp.com/oauth2/authorize?client_id=${CLIENT_ID}&scope=${SCOPES.join('%20')}&permissions=${PERMISSIONS.bitfield}`;
+    .add(PermissionFlagsBits.SendMessages)
+    .add(PermissionFlagsBits.ViewAuditLog);
+export const INVITE_LINK = `https://discord.com/oauth2/authorize?client_id=${CLIENT_ID}&scope=${SCOPES.join('%20')}&permissions=${PERMISSIONS.bitfield}`;
 
 export const VERSION = await getPackageVersion();
+/**
+ * @returns {Promise<?string>}
+ */
 async function getPackageVersion() {
     try {
         const pkgJson = JSON.parse((await readFile('package.json')).toString());
@@ -43,7 +47,15 @@ async function getPackageVersion() {
 }
 
 export const COMMIT = await getGitCommit();
+
+/**
+ * @returns {Promise<?string>}
+ */
 async function getGitCommit() {
+    if (process.env.MODBOT_COMMIT_HASH) {
+        return /** @type {string} */ process.env.MODBOT_COMMIT_HASH;
+    }
+
     try {
         return (await promisify(exec)('git rev-parse --short HEAD'))?.stdout?.replaceAll?.('\n', '');
     } catch {
@@ -86,17 +98,18 @@ export default class InfoCommand extends Command {
                 .addPairIf(COMMIT, 'Commit', hyperlink(COMMIT, `${GITHUB_REPOSITORY}/tree/${COMMIT}`, 'View on GitHub'))
                 .addPair('Uptime', formatTime(process.uptime()))
                 .addPair('Ping', bot.client.ws.ping + 'ms')
+                .addPairIf(bot.client.shard, 'Shard ID', bot.client.shard.ids.join(',') + ' (Count:' + bot.client.shard.count) + ')'
             ],
             components: [
                 /** @type {ActionRowBuilder} */
                 new ActionRowBuilder()
                     .addComponents(
                         /** @type {*} */ buttons.map(data =>
-                            new ButtonBuilder()
+                            new BetterButtonBuilder()
                                 .setLabel(data.name)
                                 .setStyle(ButtonStyle.Link)
                                 .setURL(data.url)
-                                .setEmoji(config.data.emoji[data.emoji] ?? {}))
+                                .setEmojiIfPresent(componentEmojiIfExists(data.emoji, null)))
                     )
             ]
         });

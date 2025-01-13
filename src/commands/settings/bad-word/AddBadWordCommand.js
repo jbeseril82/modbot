@@ -1,12 +1,18 @@
-import {ActionRowBuilder, ModalBuilder, TextInputBuilder, TextInputStyle} from 'discord.js';
+import {
+    ActionRowBuilder,
+    ChannelSelectMenuBuilder,
+    ChannelType,
+    ModalBuilder,
+    TextInputBuilder,
+    TextInputStyle
+} from 'discord.js';
 import Confirmation from '../../../database/Confirmation.js';
 import {parseTime, timeAfter} from '../../../util/timeutils.js';
 import ErrorEmbed from '../../../embeds/ErrorEmbed.js';
-import ChannelWrapper from '../../../discord/ChannelWrapper.js';
-import {channelSelectMenu} from '../../../util/channels.js';
 import colors from '../../../util/colors.js';
 import AddAutoResponseCommand from '../auto-response/AddAutoResponseCommand.js';
 import BadWord from '../../../database/BadWord.js';
+import {SELECT_MENU_OPTIONS_LIMIT} from '../../../util/apiLimits.js';
 
 export default class AddBadWordCommand extends AddAutoResponseCommand {
 
@@ -34,9 +40,6 @@ export default class AddBadWordCommand extends AddAutoResponseCommand {
                 }, {
                     name: 'Strike user',
                     value: 'strike'
-                }, {
-                    name: 'Send direct message',
-                    value: 'DM'
                 }
             )
         );
@@ -46,9 +49,10 @@ export default class AddBadWordCommand extends AddAutoResponseCommand {
     async execute(interaction) {
         const global = interaction.options.getBoolean('global') ?? false,
             type = interaction.options.getString('type') ?? 'include',
-            punishment = interaction.options.getString('punishment') ?? 'none';
+            punishment = interaction.options.getString('punishment') ?? 'none',
+            vision = interaction.options.getBoolean('image-detection') ?? false;
 
-        const confirmation = new Confirmation({global, punishment, type}, timeAfter('1 hour'));
+        const confirmation = new Confirmation({global, punishment, type, vision}, timeAfter('1 hour'));
         const modal = new ModalBuilder()
             .setTitle(`Create new Bad-word of type ${type}`)
             .setCustomId(`bad-word:add:${await confirmation.save()}`)
@@ -71,7 +75,7 @@ export default class AddBadWordCommand extends AddAutoResponseCommand {
                     .addComponents(
                         /** @type {*} */
                         new TextInputBuilder()
-                            .setRequired(true)
+                            .setRequired(false)
                             .setCustomId('response')
                             .setStyle(TextInputStyle.Paragraph)
                             .setPlaceholder('Hi there :wave:')
@@ -86,10 +90,25 @@ export default class AddBadWordCommand extends AddAutoResponseCommand {
                         new TextInputBuilder()
                             .setRequired(false)
                             .setCustomId('priority')
-                            .setStyle(TextInputStyle.Paragraph)
+                            .setStyle(TextInputStyle.Short)
                             .setPlaceholder('0')
                             .setLabel('Priority')
-                    )
+                            .setMinLength(1)
+                            .setMaxLength(10)
+                    ),
+                /** @type {*} */
+                new ActionRowBuilder()
+                    .addComponents(
+                        /** @type {*} */
+                        new TextInputBuilder()
+                            .setRequired(false)
+                            .setCustomId('dm')
+                            .setStyle(TextInputStyle.Paragraph)
+                            .setPlaceholder('This is a direct message sent to the user when their message was deleted')
+                            .setLabel('Direct Message')
+                            .setMinLength(1)
+                            .setMaxLength(3000)
+                    ),
             );
 
         if (['ban', 'mute'].includes(punishment)) {
@@ -99,12 +118,12 @@ export default class AddBadWordCommand extends AddAutoResponseCommand {
                     .addComponents(
                         /** @type {*} */
                         new TextInputBuilder()
-                            .setRequired(true)
+                            .setRequired(false)
                             .setCustomId('duration')
                             .setStyle(TextInputStyle.Short)
                             .setPlaceholder('Punishment duration')
                             .setLabel('duration')
-                            .setMinLength(1)
+                            .setMinLength(2)
                             .setMaxLength(4000)
                     )
             );
@@ -122,20 +141,25 @@ export default class AddBadWordCommand extends AddAutoResponseCommand {
             return;
         }
 
-        let trigger, response, duration = null, priority = 0;
+        let trigger, response = null, duration = null, priority = 0, dm = null;
         for (let component of interaction.components) {
             component = component.components[0];
-            if (component.customId === 'trigger') {
-                trigger = component.value;
-            }
-            else if (component.customId === 'response') {
-                response = component.value;
-            }
-            else if (component.customId === 'duration') {
-                duration = parseTime(component.value) || null;
-            }
-            else if (component.customId === 'priority') {
-                priority = parseInt(component.value) || 0;
+            switch (component.customId) {
+                case 'trigger':
+                    trigger = component.value;
+                    break;
+                case 'response':
+                    response = component.value?.substring?.(0, 4000);
+                    break;
+                case 'duration':
+                    duration = parseTime(component.value) || null;
+                    break;
+                case 'priority':
+                    priority = parseInt(component.value) || 0;
+                    break;
+                case 'dm':
+                    dm = component.value?.substring?.(0, 3000);
+                    break;
             }
         }
 
@@ -151,26 +175,32 @@ export default class AddBadWordCommand extends AddAutoResponseCommand {
                 confirmation.data.punishment,
                 duration,
                 priority,
+                dm,
+                confirmation.data.vision,
             );
-        }
-        else {
+        } else {
             confirmation.data.trigger = trigger;
             confirmation.data.response = response;
             confirmation.data.duration = duration;
             confirmation.data.priority = priority;
+            confirmation.data.dm = dm;
             confirmation.expires = timeAfter('30 min');
-
-            const channels = (await interaction.guild.channels.fetch())
-                .map(channel => new ChannelWrapper(channel));
 
             await interaction.reply({
                 ephemeral: true,
                 content: 'Select channels for the bad-word',
                 components: [
                     /** @type {ActionRowBuilder} */
-                    new ActionRowBuilder().addComponents(/** @type {*} */
-                        channelSelectMenu(channels)
-                            .setCustomId(`bad-word:add:${await confirmation.save()}`)
+                    new ActionRowBuilder().addComponents(/** @type {*} */new ChannelSelectMenuBuilder()
+                        .addChannelTypes(/** @type {*} */[
+                            ChannelType.GuildText,
+                            ChannelType.GuildForum,
+                            ChannelType.GuildAnnouncement,
+                            ChannelType.GuildStageVoice,
+                        ])
+                        .setMinValues(1)
+                        .setMaxValues(SELECT_MENU_OPTIONS_LIMIT)
+                        .setCustomId(`bad-word:add:${await confirmation.save()}`)
                     ),
                 ]
             });
@@ -196,9 +226,12 @@ export default class AddBadWordCommand extends AddAutoResponseCommand {
             confirmation.data.punishment,
             confirmation.data.duration,
             confirmation.data.priority,
+            confirmation.data.dm,
+            confirmation.data.vision,
         );
     }
 
+    // noinspection JSCheckFunctionSignatures
     /**
      * create the bad word
      * @param {import('discord.js').Interaction} interaction
@@ -207,14 +240,39 @@ export default class AddBadWordCommand extends AddAutoResponseCommand {
      * @param {string} type
      * @param {string} trigger
      * @param {string} response
-     * @param {string} punishment
+     * @param {?string} punishment
      * @param {?number} duration
-     * @param {number} priority
-     * @return {Promise<*>}
+     * @param {?number} priority
+     * @param {?string} dm
+     * @param {?boolean} enableVision
+     * @returns {Promise<*>}
      */
-    async create(interaction, global, channels, type, trigger, response, punishment, duration, priority) {
-        const result = await BadWord.new(interaction.guild.id, global, channels, type,
-            trigger, response, punishment, duration, priority);
+    async create(
+        interaction,
+        global,
+        channels,
+        type,
+        trigger,
+        response,
+        punishment,
+        duration,
+        priority,
+        dm,
+        enableVision,
+    ) {
+        const result = await BadWord.new(
+            interaction.guild.id,
+            global,
+            channels,
+            type,
+            trigger,
+            response,
+            punishment,
+            duration,
+            priority,
+            dm,
+            enableVision,
+        );
         if (!result.success) {
             return interaction.reply(ErrorEmbed.message(result.message));
         }

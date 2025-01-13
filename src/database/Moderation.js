@@ -2,11 +2,22 @@ import TypeChecker from '../settings/TypeChecker.js';
 import database from '../bot/Database.js';
 import UserWrapper from '../discord/UserWrapper.js';
 import WhereParameter from './WhereParameter.js';
+import KeyValueEmbed from '../embeds/KeyValueEmbed.js';
+import {resolveColor} from '../util/colors.js';
+import {toTitleCase} from '../util/format.js';
+import {userMention} from 'discord.js';
+import {formatTime} from '../util/timeutils.js';
+import MemberWrapper from '../discord/MemberWrapper.js';
+import GuildWrapper from '../discord/GuildWrapper.js';
+
+/**
+ * @import {Message} from 'discord.js';
+ */
 
 export default class Moderation {
 
     /**
-     * @type {Number}
+     * @type {number}
      */
     id;
 
@@ -22,40 +33,45 @@ export default class Moderation {
 
     /**
      * moderation actions:
-     * * ban
-     * * unban
-     * * kick
-     * * mute
-     * * unmute
-     * * softban
-     * * strike
-     * * pardon
-     * @type {String}
+     * - ban
+     * - unban
+     * - kick
+     * - mute
+     * - unmute
+     * - softban
+     * - strike
+     * - pardon
+     * @type {string}
      */
     action;
 
     /**
      * UNIX timestamp of creation (in seconds)
-     * @type {Number}
+     * @type {number}
      */
     created;
 
     /**
      * e.g. strike count
-     * @type {Number}
+     * @type {number}
      */
     value;
 
     /**
      * UNIX timestamp of expiration (in seconds)
-     * @type {Number}
+     * @type {number}
      */
     expireTime;
 
     /**
-     * @type {String}
+     * @type {?string}
      */
     reason;
+
+    /**
+     * @type {?string}
+     */
+    comment;
 
     /**
      * @type {import('discord.js').Snowflake}
@@ -68,14 +84,15 @@ export default class Moderation {
     active;
 
     /**
-     * @param {Object} data
-     * @param {Number} [data.id]
+     * @param {object} data
+     * @param {number} [data.id]
      * @param {import('discord.js').Snowflake} data.guildid
      * @param {import('discord.js').Snowflake} data.userid
-     * @param {String} data.action
+     * @param {string} data.action
      * @param {?string|number} [data.created]
-     * @param {Number} [data.value]
-     * @param {String} [data.reason]
+     * @param {number} [data.value]
+     * @param {string} [data.reason]
+     * @param {string} [data.comment]
      * @param {?string|number} [data.expireTime]
      * @param {import('discord.js').Snowflake} data.moderator
      * @param {boolean} [data.active]
@@ -88,6 +105,7 @@ export default class Moderation {
         this.created = parseInt(data.created) || Math.floor(Date.now()/1000);
         this.value = data.value;
         this.reason = data.reason || 'No reason provided.';
+        this.comment = data.comment;
         this.expireTime = parseInt(data.expireTime) || null;
         this.moderator = data.moderator;
         this.active = !!data.active;
@@ -95,7 +113,7 @@ export default class Moderation {
 
     /**
      * check if the types of this object are a valid Moderation
-     * @param {Object} data
+     * @param {object} data
      */
     static checkTypes(data) {
         TypeChecker.assertOfTypes(data, ['object'], 'Data object');
@@ -107,6 +125,7 @@ export default class Moderation {
         TypeChecker.assertOfTypes(data.created, ['number','string','undefined'], 'Created', true);
         TypeChecker.assertNumberUndefinedOrNull(data.value, 'Value');
         TypeChecker.assertStringUndefinedOrNull(data.reason, 'Reason');
+        TypeChecker.assertStringUndefinedOrNull(data.comment, 'Comment');
         TypeChecker.assertOfTypes(data.expireTime, ['number','string','undefined'], 'Expire time', true);
         TypeChecker.assertStringUndefinedOrNull(data.moderator, 'Moderator');
         TypeChecker.assertOfTypes(data.active, ['boolean', 'undefined'], 'Active');
@@ -114,10 +133,10 @@ export default class Moderation {
 
     /**
      * escaped database fields
-     * @return {string[]}
+     * @returns {string[]}
      */
     static getFields() {
-        return ['id', 'guildid', 'userid', 'action', 'created', 'value', 'expireTime', 'reason', 'moderator', 'active']
+        return ['id', 'guildid', 'userid', 'action', 'created', 'value', 'expireTime', 'reason', 'comment', 'moderator', 'active']
             .map(field => database.escapeId(field));
     }
 
@@ -126,7 +145,7 @@ export default class Moderation {
      * @param {WhereParameter[]} params
      * @param {?number} limit
      * @param {boolean} sortAscending
-     * @return {Promise<Moderation[]>}
+     * @returns {Promise<Moderation[]>}
      */
     static async select(params, limit = null, sortAscending = true) {
         const where = params.join(' AND ');
@@ -147,7 +166,7 @@ export default class Moderation {
      * get all moderations for a guild or member
      * @param {import('discord.js').Snowflake} guildId
      * @param {import('discord.js').Snowflake} [userId]
-     * @return {Promise<Moderation[]>}
+     * @returns {Promise<Moderation[]>}
      */
     static async getAll(guildId, userId = null) {
         const params = [new WhereParameter('guildid', guildId)];
@@ -163,7 +182,7 @@ export default class Moderation {
      * get a moderation
      * @param {import('discord.js').Snowflake} guildId
      * @param {number} id
-     * @return {Promise<?Moderation>}
+     * @returns {Promise<?Moderation>}
      */
     static async get(guildId, id) {
         return (await this.select([
@@ -175,7 +194,7 @@ export default class Moderation {
     /**
      * insert multiple moderations at once
      * @param {Moderation[]} moderations
-     * @return {Promise}
+     * @returns {Promise}
      */
     static async bulkSave(moderations) {
         if(!Array.isArray(moderations) || !moderations.length) {
@@ -195,7 +214,7 @@ export default class Moderation {
 
     /**
      * get duration in seconds
-     * @return {null|number}
+     * @returns {null|number}
      */
     getDuration() {
         if (!this.expireTime) return null;
@@ -204,7 +223,7 @@ export default class Moderation {
 
     /**
      * add this moderation to the database
-     * @return {Promise<number>}
+     * @returns {Promise<number>}
      */
     async save() {
         const fields = this.constructor.getFields().slice(1);
@@ -214,8 +233,8 @@ export default class Moderation {
                 ...this.getParameters(), this.id);
         }
         else {
-            const result = await database.query(
-                `INSERT INTO moderations (${fields.join(', ')}) VALUES ${'?'.repeat(fields.length)}`,
+            const result = await database.queryAll(
+                `INSERT INTO moderations (${fields.join(', ')}) VALUES (${fields.map(() => '?').join(', ')})`,
                 ...this.getParameters());
             this.id = result.insertId;
         }
@@ -223,8 +242,40 @@ export default class Moderation {
     }
 
     /**
+     * log this moderation to the guild's log channel
+     * @param {?number} total total strike count
+     * @returns {Promise<Message>}
+     */
+    async log(total = null) {
+        const user = await this.getUser();
+        const moderator = await this.getModerator();
+        const member = await this.getMemberWrapper();
+
+        return (await this.getGuildWrapper()).log({
+            embeds: [
+                new KeyValueEmbed()
+                    .setColor(resolveColor(this.action))
+                    .setAuthor({
+                        name: `Case ${this.id} | ${toTitleCase(this.action)} | ${await member.displayName()}`,
+                        iconURL: await member.displayAvatarURL()
+                    })
+                    .setFooter({text: user.id})
+                    .addPair('User', userMention(user.id))
+                    .addPair('User ID', user.id)
+                    .addPair('Moderator', userMention(moderator.id))
+                    .addPair('Moderator ID', moderator.id)
+                    .addPairIf(this.expireTime, 'Duration', formatTime(this.expireTime - this.created))
+                    .addPairIf(this.value, 'Amount', this.value)
+                    .addPairIf(total, 'Total Strikes', total)
+                    .addPairIf(this.reason, 'Reason', this.reason?.substring(0, 1024))
+                    .addPairIf(this.comment, 'Comment', this.comment?.substring(0, 1024))
+            ]
+        });
+    }
+
+    /**
      * Delete this moderation from the database
-     * @return {Promise}
+     * @returns {Promise}
      */
     async delete() {
         return database.query('DELETE FROM moderations WHERE id = ?', this.id);
@@ -232,23 +283,39 @@ export default class Moderation {
 
     /**
      * get all parameters of this moderation
-     * @return {(import('discord.js').Snowflake|String|Number)[]}
+     * @returns {(import('discord.js').Snowflake|string|number)[]}
      */
     getParameters() {
-        return [this.guildid, this.userid, this.action, this.created, this.value, this.expireTime, this.reason, this.moderator, this.active];
+        return [this.guildid, this.userid, this.action, this.created, this.value, this.expireTime, this.reason, this.comment, this.moderator, this.active];
     }
 
     /**
      * fetch the user targeted by this moderation.
-     * @return {Promise<import('discord.js').User>}
+     * @returns {Promise<import('discord.js').User>}
      */
     async getUser() {
         return await (new UserWrapper(this.userid)).fetchUser();
     }
 
     /**
+     * fetch the guild this moderation was executed in.
+     * @returns {Promise<GuildWrapper>}
+     */
+    async getGuildWrapper() {
+        return await GuildWrapper.fetch(this.guildid);
+    }
+
+    /**
+     * fetch the user targeted by this moderation.
+     * @returns {Promise<MemberWrapper>}
+     */
+    async getMemberWrapper() {
+        return new MemberWrapper(await this.getUser(), await this.getGuildWrapper());
+    }
+
+    /**
      * fetch the moderator who executed this moderation.
-     * @return {Promise<?import('discord.js').User>}
+     * @returns {Promise<?import('discord.js').User>}
      */
     async getModerator() {
         if (!this.moderator) {

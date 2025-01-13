@@ -20,6 +20,11 @@ export default class ModerationEditCommand extends CompletingModerationCommand {
                 .setRequired(false)
         );
         builder.addStringOption(option =>
+            option.setName('comment')
+                .setDescription('New moderation comment')
+                .setRequired(false)
+        );
+        builder.addStringOption(option =>
             option.setName('duration')
                 .setDescription('New moderation duration (since moderation creation)')
                 .setRequired(false)
@@ -41,11 +46,12 @@ export default class ModerationEditCommand extends CompletingModerationCommand {
             return;
         }
 
-        const reason = interaction.options.getString('reason');
-        let duration = interaction.options.getString('duration'),
-            count = interaction.options.getInteger('count');
+        const reason = interaction.options.getString('reason'),
+            comment = interaction.options.getString('comment'),
+            duration = parseTime(interaction.options.getString('duration'));
+        let count = interaction.options.getInteger('count');
 
-        if (!reason && !duration && !count) {
+        if (!reason && !duration && !count && !comment) {
             await interaction.reply(ErrorEmbed.message('You need to provide at least one option you want to change'));
             return;
         }
@@ -54,12 +60,16 @@ export default class ModerationEditCommand extends CompletingModerationCommand {
             moderation.reason = reason;
         }
 
+        if (comment) {
+            moderation.comment = comment;
+        }
+
         if (duration) {
             if (!moderation.active) {
                 await interaction.reply(ErrorEmbed.message('You can\'t update the duration of inactive moderations!'));
                 return;
             }
-            moderation.expireTime = moderation.created + parseTime(duration);
+            moderation.expireTime = moderation.created + duration;
         }
 
         if (count) {
@@ -77,7 +87,8 @@ export default class ModerationEditCommand extends CompletingModerationCommand {
         }
 
         await moderation.save();
-        await interaction.reply(new ModerationEmbed(moderation, await moderation.getUser()).toMessage());
+        const user = await (await moderation.getMemberWrapper()).getMemberOrUser();
+        await interaction.reply(new ModerationEmbed(moderation, user).toMessage());
     }
 
     getDescription() {

@@ -1,12 +1,9 @@
 import {
-    ActionRowBuilder,
     bold,
     escapeMarkdown,
     ModalBuilder,
     PermissionFlagsBits,
     PermissionsBitField,
-    TextInputBuilder,
-    TextInputStyle
 } from 'discord.js';
 import MemberWrapper from '../../discord/MemberWrapper.js';
 import colors from '../../util/colors.js';
@@ -17,27 +14,28 @@ import {inLimits} from '../../util/util.js';
 import EmbedWrapper from '../../embeds/EmbedWrapper.js';
 import {formatNumber, inlineEmojiIfExists} from '../../util/format.js';
 import {deferReplyOnce, replyOrEdit} from '../../util/interaction.js';
+import ReasonInput from '../../modals/inputs/ReasonInput.js';
+import CommentInput from '../../modals/inputs/CommentInput.js';
+import CountInput from '../../modals/inputs/CountInput.js';
+
+/**
+ * @import {ConfirmationData} from './UserCommand.js';
+ */
+
+/**
+ * @typedef {ConfirmationData} StrikeConfirmationData
+ * @property {?number} count
+ */
 
 export default class StrikeCommand extends UserCommand {
 
     /**
      * add options to slash command builder
      * @param {import('discord.js').SlashCommandBuilder} builder
-     * @return {import('discord.js').SlashCommandBuilder}
+     * @returns {import('discord.js').SlashCommandBuilder}
      */
     buildOptions(builder) {
-        builder.addUserOption(option =>
-            option
-                .setName('user')
-                .setDescription('The user you want to strike')
-                .setRequired(true)
-        );
-        builder.addStringOption(option =>
-            option.setName('reason')
-                .setDescription('Strike reason')
-                .setRequired(false)
-                .setAutocomplete(true)
-        );
+        super.buildOptions(builder);
         builder.addIntegerOption(option =>
             option.setName('count')
                 .setDescription('Strike count')
@@ -45,7 +43,7 @@ export default class StrikeCommand extends UserCommand {
                 .setMinValue(1)
                 .setMaxValue(100)
         );
-        return super.buildOptions(builder);
+        return builder;
     }
 
     getDefaultMemberPermissions() {
@@ -66,6 +64,7 @@ export default class StrikeCommand extends UserCommand {
         await this.strike(interaction,
             new MemberWrapper(interaction.options.getUser('user', true), interaction.guild),
             interaction.options.getString('reason'),
+            interaction.options.getString('comment'),
             interaction.options.getInteger('count'),
         );
     }
@@ -75,23 +74,24 @@ export default class StrikeCommand extends UserCommand {
      * @param {import('discord.js').Interaction} interaction
      * @param {?MemberWrapper} member
      * @param {?string} reason
+     * @param {?string} comment
      * @param {?number} count
-     * @return {Promise<void>}
+     * @returns {Promise<void>}
      */
-    async strike(interaction, member, reason, count) {
+    async strike(interaction, member, reason, comment, count) {
         await deferReplyOnce(interaction);
         reason = reason || 'No reason provided';
         count = inLimits(count, 1, 100);
 
         if (!await this.checkPermissions(interaction, member) ||
-            !await this.preventDuplicateModeration(interaction, member, {reason, count})) {
+            !await this.preventDuplicateModeration(interaction, member, {reason, comment, count})) {
             return;
         }
 
-        await member.strike(reason, interaction.user, count);
+        await member.strike(reason, comment, interaction.user, count);
         await replyOrEdit(interaction, new EmbedWrapper()
             .setDescription(inlineEmojiIfExists('strike') +
-                `${bold(escapeMarkdown(member.user.tag))} has received ${formatNumber(count, 'strike')}: ${reason}`)
+                `${bold(escapeMarkdown(await member.displayName()))} has received ${formatNumber(count, 'strike')}: ${reason}`)
             .setColor(colors.RED)
             .toMessage()
         );
@@ -100,7 +100,7 @@ export default class StrikeCommand extends UserCommand {
     async executeButton(interaction) {
         const parts = interaction.customId.split(':');
         if (parts[1] === 'confirm') {
-            /** @type {Confirmation<{reason: ?string, count: number, user: import('discord.js').Snowflake}>}*/
+            /** @type {Confirmation<StrikeConfirmationData>}*/
             const data = await Confirmation.get(parts[2]);
             if (!data) {
                 await interaction.update({content: 'This confirmation has expired.', embeds: [], components: []});
@@ -111,6 +111,7 @@ export default class StrikeCommand extends UserCommand {
                 interaction,
                 await MemberWrapper.getMember(interaction, data.data.user),
                 data.data.reason,
+                data.data.comment,
                 data.data.count,
             );
             return;
@@ -128,7 +129,7 @@ export default class StrikeCommand extends UserCommand {
      * prompt user for strike reason and count
      * @param {import('discord.js').Interaction} interaction
      * @param {?MemberWrapper} member
-     * @return {Promise<void>}
+     * @returns {Promise<void>}
      */
     async promptForData(interaction, member) {
         if (!member) {
@@ -136,37 +137,29 @@ export default class StrikeCommand extends UserCommand {
         }
 
         await interaction.showModal(new ModalBuilder()
-            .setTitle(`Strike ${member.user.tag}`.substring(0, MODAL_TITLE_LIMIT))
+            .setTitle(`Strike ${await member.displayName()}`.substring(0, MODAL_TITLE_LIMIT))
             .setCustomId(`strike:${member.user.id}`)
             .addComponents(
-                /** @type {*} */
-                new ActionRowBuilder()
-                    .addComponents(/** @type {*} */ new TextInputBuilder()
-                        .setRequired(false)
-                        .setLabel('Reason')
-                        .setCustomId('reason')
-                        .setStyle(TextInputStyle.Paragraph)
-                        .setPlaceholder('No reason provided')),
-                /** @type {*} */
-                new ActionRowBuilder()
-                    .addComponents(/** @type {*} */ new TextInputBuilder()
-                        .setRequired(false)
-                        .setLabel('Count')
-                        .setCustomId('count')
-                        .setStyle(TextInputStyle.Short)
-                        .setPlaceholder('1')),
+                new ReasonInput().toActionRow(),
+                new CommentInput().toActionRow(),
+                new CountInput().toActionRow(),
             ));
     }
 
     async executeModal(interaction) {
-        let reason, count;
+        let reason, comment, count;
         for (const row of interaction.components) {
             for (const component of row.components) {
-                if (component.customId === 'reason') {
-                    reason = component.value || 'No reason provided';
-                }
-                else if (component.customId === 'count') {
-                    count = parseInt(component.value);
+                switch (component.customId) {
+                    case 'reason':
+                        reason = component.value || 'No reason provided';
+                        break;
+                    case 'comment':
+                        comment = component.value || null;
+                        break;
+                    case 'count':
+                        count = parseInt(component.value);
+                        break;
                 }
             }
         }
@@ -175,6 +168,7 @@ export default class StrikeCommand extends UserCommand {
             interaction,
             await MemberWrapper.getMemberFromCustomId(interaction),
             reason,
+            comment,
             count
         );
     }
